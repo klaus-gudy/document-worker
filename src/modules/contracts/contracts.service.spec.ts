@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common';
 
-import { ContractsService } from './contracts.service';
-import type { LeaseCreatedEvent } from './events/lease-created.event';
+import { ContractsService } from '@/modules/contracts/contracts.service';
+import type { LeaseCreatedEvent } from '@/modules/contracts/events/lease-created.event';
 
 /**
  * The service is testable without a broker, which is the reason it is separate

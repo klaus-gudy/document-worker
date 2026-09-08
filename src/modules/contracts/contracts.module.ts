@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common';
 
-import { MessagingModule } from '../messaging/messaging.module';
-import { ContractsService } from './contracts.service';
-import { LeaseCreatedListener } from './listeners/lease-created.listener';
+import { MessagingModule } from '@/messaging/messaging.module';
+import { ContractsService } from '@/modules/contracts/contracts.service';
+import { LeaseCreatedListener } from '@/modules/contracts/listeners/lease-created.listener';
 
 /**
  * Everything to do with lease contracts. It imports `MessagingModule` for a

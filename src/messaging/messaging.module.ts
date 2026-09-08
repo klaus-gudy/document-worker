@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 
-import rabbitmqConfig from '../config/rabbitmq.config';
-import { RabbitmqService } from './rabbitmq.service';
+import rabbitmqConfig from '@/config/rabbitmq.config';
+import { RabbitmqService } from '@/messaging/rabbitmq.service';
 
 /**
  * Infrastructure, not a feature. It owns the broker connection and nothing

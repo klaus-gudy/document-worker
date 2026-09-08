@@ -1,10 +1,10 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 
-import appConfig from './config/app.config';
-import rabbitmqConfig from './config/rabbitmq.config';
-import { ContractsModule } from './contracts/contracts.module';
-import { HealthModule } from './health/health.module';
+import appConfig from '@/config/app.config';
+import rabbitmqConfig from '@/config/rabbitmq.config';
+import { ContractsModule } from '@/modules/contracts/contracts.module';
+import { HealthModule } from '@/modules/health/health.module';
 
 /**
  * The root module wires features together and owns no logic of its own.

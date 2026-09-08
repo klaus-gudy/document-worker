@@ -13,7 +13,7 @@ import {
   type ConsumeMessage,
 } from 'amqplib';
 
-import rabbitmqConfig from '../config/rabbitmq.config';
+import rabbitmqConfig from '@/config/rabbitmq.config';
 
 /** What a feature module needs to declare to receive its events. */
 export type Subscription = {

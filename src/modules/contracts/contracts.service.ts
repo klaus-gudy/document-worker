@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 
-import type { LeaseCreatedEvent } from './events/lease-created.event';
+import type { LeaseCreatedEvent } from '@/modules/contracts/events/lease-created.event';
 
 /**
  * What this application does when a lease is created.

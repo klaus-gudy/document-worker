@@ -14,6 +14,12 @@
     "sourceMap": true,
     "outDir": "./dist",
     "baseUrl": "./",
+    // A single rule rather than one alias per top-level folder
+    // (@config, @messaging, @modules): those need a new entry every time a
+    // folder appears, and this never does.
+    "paths": {
+      "@/*": ["src/*"]
+    },
     "incremental": true,
     "skipLibCheck": true,
     "strictNullChecks": true,

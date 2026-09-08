@@ -1,10 +1,13 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import type { ConsumeMessage } from 'amqplib';
 
-import { RabbitmqService } from '../../messaging/rabbitmq.service';
-import { LEASE_CREATED, LEASE_CREATED_QUEUE } from '../contracts.constants';
-import { ContractsService } from '../contracts.service';
-import type { LeaseCreatedEvent } from '../events/lease-created.event';
+import { RabbitmqService } from '@/messaging/rabbitmq.service';
+import {
+  LEASE_CREATED,
+  LEASE_CREATED_QUEUE,
+} from '@/modules/contracts/contracts.constants';
+import { ContractsService } from '@/modules/contracts/contracts.service';
+import type { LeaseCreatedEvent } from '@/modules/contracts/events/lease-created.event';
 
 /**
  * Receives `lease.created` off the queue and hands it to `ContractsService`.
