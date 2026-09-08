@@ -6,6 +6,7 @@ import rabbitmqConfig from '@/config/rabbitmq.config';
 import storageConfig from '@/config/storage.config';
 import { ContractsModule } from '@/modules/contracts/contracts.module';
 import { HealthModule } from '@/modules/health/health.module';
+import { PdfModule } from '@/modules/pdf/pdf.module';
 
 /**
  * The root module wires features together and owns no logic of its own.
@@ -27,6 +28,7 @@ import { HealthModule } from '@/modules/health/health.module';
     }),
     HealthModule,
     ContractsModule,
+    PdfModule,
   ],
 })
 export class AppModule {}
