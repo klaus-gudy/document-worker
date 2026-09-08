@@ -11,6 +11,13 @@ export default registerAs('app', () => ({
   port: Number(process.env.PORT ?? 3400),
 
   /**
+   * Prefixed onto every HTTP route except `health` — see `main.ts`. A
+   * platform's liveness probe should not need to know or agree on an API
+   * version to find it, so it stays reachable at bare `/health` regardless.
+   */
+  apiPrefix: process.env.API_PREFIX ?? 'api/v1',
+
+  /**
    * Whether to serve the OpenAPI docs.
    *
    * Off in production unless asked for: the document describes the shape of
