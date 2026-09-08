@@ -1,18 +1,28 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
-import { RabbitmqModule } from './rabbitmq/rabbitmq.module';
+import appConfig from './config/app.config';
+import rabbitmqConfig from './config/rabbitmq.config';
+import { ContractsModule } from './contracts/contracts.module';
+import { HealthModule } from './health/health.module';
 
+/**
+ * The root module wires features together and owns no logic of its own.
+ *
+ * `MessagingModule` is deliberately absent here: it is infrastructure, imported
+ * by the features that need a broker rather than made global. That keeps the
+ * dependency visible in `ContractsModule` instead of arriving invisibly.
+ */
 @Module({
   imports: [
-    // Reads `.env` into `process.env`. Global so `RabbitmqService` can inject
-    // `ConfigService` without importing this module itself.
-    ConfigModule.forRoot({ isGlobal: true }),
-    RabbitmqModule,
+    ConfigModule.forRoot({
+      isGlobal: true,
+      load: [appConfig, rabbitmqConfig],
+      // Read once at boot rather than off `process.env` on every access.
+      cache: true,
+    }),
+    HealthModule,
+    ContractsModule,
   ],
-  controllers: [AppController],
-  providers: [AppService],
 })
 export class AppModule {}
