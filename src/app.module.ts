@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 
+import { LoggingInterceptor } from '@/common/interceptors/logging.interceptor';
 import appConfig from '@/config/app.config';
 import rabbitmqConfig from '@/config/rabbitmq.config';
 import storageConfig from '@/config/storage.config';
@@ -29,6 +31,15 @@ import { PdfModule } from '@/modules/pdf/pdf.module';
     HealthModule,
     ContractsModule,
     PdfModule,
+  ],
+  providers: [
+    /*
+     * Registered through `APP_INTERCEPTOR` rather than
+     * `app.useGlobalInterceptors()` in `main.ts`, so it goes through the DI
+     * container and can inject providers later (a config value deciding what
+     * to log, for instance) without being rewritten.
+     */
+    { provide: APP_INTERCEPTOR, useClass: LoggingInterceptor },
   ],
 })
 export class AppModule {}
