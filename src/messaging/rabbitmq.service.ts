@@ -13,6 +13,8 @@ import {
   type ConsumeMessage,
 } from 'amqplib';
 
+import type { DependencyHealth } from '@/common/dependency-health';
+import { withTimeout } from '@/common/dependency-health';
 import rabbitmqConfig from '@/config/rabbitmq.config';
 
 /** What a feature module needs to declare to receive its events. */
@@ -45,6 +47,14 @@ export class RabbitmqService implements OnModuleInit, OnApplicationShutdown {
   private connection?: ChannelModel;
   private channel?: Channel;
 
+  /**
+   * Tracked separately from `connection` being set, because the field stays
+   * populated after the socket dies — nothing here nulls it out on close.
+   * This is the flag `checkHealth` trusts first, before ever touching the
+   * channel.
+   */
+  private connected = false;
+
   constructor(
     @Inject(rabbitmqConfig.KEY)
     private readonly config: ConfigType<typeof rabbitmqConfig>,
@@ -62,14 +72,46 @@ export class RabbitmqService implements OnModuleInit, OnApplicationShutdown {
     });
     await this.channel.prefetch(this.config.prefetch);
 
-    this.connection.on('error', (error: Error) =>
-      this.logger.error(`connection error: ${error.message}`),
-    );
-    this.connection.on('close', () => this.logger.warn('connection closed'));
+    this.connection.on('error', (error: Error) => {
+      this.connected = false;
+      this.logger.error(`connection error: ${error.message}`);
+    });
+    this.connection.on('close', () => {
+      this.connected = false;
+      this.logger.warn('connection closed');
+    });
 
+    this.connected = true;
     this.logger.log(
       `connected to ${this.config.url} — exchange "${this.config.exchange}"`,
     );
+  }
+
+  /**
+   * Is the broker actually reachable right now.
+   *
+   * There is currently **no reconnect logic** in this service — a dropped
+   * connection stays dropped until the process restarts. That is exactly why
+   * this exists: without it, that failure is invisible to everything outside
+   * this process. `checkExchange` is used as the probe because it is a
+   * read-only round trip against something already known to exist (asserted
+   * at startup), so a healthy broker answers it with no side effect.
+   */
+  async checkHealth(): Promise<DependencyHealth> {
+    if (!this.connected || !this.channel) {
+      return { status: 'down', error: 'not connected' };
+    }
+
+    const startedAt = Date.now();
+    try {
+      await withTimeout(this.channel.checkExchange(this.config.exchange), 2000);
+      return { status: 'up', latencyMs: Date.now() - startedAt };
+    } catch (cause) {
+      return {
+        status: 'down',
+        error: cause instanceof Error ? cause.message : String(cause),
+      };
+    }
   }
 
   /**

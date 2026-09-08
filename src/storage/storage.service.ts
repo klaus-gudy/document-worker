@@ -14,6 +14,8 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 
+import type { DependencyHealth } from '@/common/dependency-health';
+import { withTimeout } from '@/common/dependency-health';
 import storageConfig from '@/config/storage.config';
 
 /**
@@ -68,6 +70,33 @@ export class StorageService implements OnModuleInit, OnApplicationShutdown {
   async onModuleInit() {
     await this.client.send(new HeadBucketCommand({ Bucket: this.bucket }));
     this.logger.log(`connected to bucket "${this.bucket}" at ${this.endpoint}`);
+  }
+
+  /**
+   * Is the bucket actually reachable right now.
+   *
+   * Reissues the same `HeadBucketCommand` `onModuleInit` used to fail fast at
+   * boot — cheap, read-only, and it needs no object to exist. Bounded by the
+   * outer `withTimeout` regardless of how many attempts the SDK's own retry
+   * policy makes internally, since a health probe should answer once, quickly,
+   * not spend its budget on the SDK's default backoff-and-retry.
+   */
+  async checkHealth(): Promise<DependencyHealth> {
+    const startedAt = Date.now();
+    try {
+      await withTimeout(
+        this.client.send(new HeadBucketCommand({ Bucket: this.bucket }), {
+          requestTimeout: 2000,
+        }),
+        2000,
+      );
+      return { status: 'up', latencyMs: Date.now() - startedAt };
+    } catch (cause) {
+      return {
+        status: 'down',
+        error: cause instanceof Error ? cause.message : String(cause),
+      };
+    }
   }
 
   async putObject(key: string, body: Uint8Array, contentType: string) {
