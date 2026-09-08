@@ -1,0 +1,46 @@
+# The worker on its own. It owns no infrastructure — the RabbitMQ broker and the
+# MinIO bucket belong to the Jarvis app, and this service joins them. There is
+# no database here at all.
+#
+# Locally that means bringing Jarvis's stack up first:
+#
+#   cd ../jarvis && docker compose up -d
+#   cd ../document-worker && docker compose up --build
+#
+# `network_mode: host` would be simpler but does not work on Docker Desktop,
+# so the URLs below reach the host through `host.docker.internal` instead.
+services:
+  document-worker:
+    build: .
+    container_name: jarvis-document-worker
+
+    environment:
+      NODE_ENV: production
+      PORT: 3400
+
+      RABBITMQ_URL: amqp://guest:guest@host.docker.internal:5682
+      EVENTS_EXCHANGE: jarvis.events
+      DOCUMENT_QUEUE: documents.generate
+      DOCUMENT_PREFETCH: 1
+      DOCUMENT_MAX_ATTEMPTS: 2
+
+      STORAGE_ENDPOINT: http://host.docker.internal:9000
+      STORAGE_BUCKET: jarvis-files
+      STORAGE_ACCESS_KEY_ID: minioadmin
+      STORAGE_SECRET_ACCESS_KEY: minioadmin123
+      STORAGE_REGION: auto
+
+    ports:
+      - "3400:3400"
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3400/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    restart: unless-stopped

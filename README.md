@@ -1,98 +1,132 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# document-worker
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Turns HTML into a stored PDF. That is the whole job.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
-
-## Description
-
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
-
-```bash
-$ npm install
+```
+document.requested ──▶ documents.generate ──▶ [ HTML → PDF → object storage ] ──▶ document.generated
+     (requester)            (queue)                    (this worker)                  (requester)
 ```
 
-## Compile and run the project
+It has **no database**. The requester has already decided what the document
+says — it sends finished HTML, and this renders it, stores the bytes, and
+publishes the key they landed under. Whatever record that key belongs on is the
+requester's business, and the requester is the only thing that writes to its own
+tables.
 
-```bash
-# development
-$ npm run start
+That boundary is deliberate, and it is what makes this service reusable: it
+knows nothing about leases, so invoices, receipts and notices travel the same
+queue with no new code here.
 
-# watch mode
-$ npm run start:dev
+## Why it is a separate service
 
-# production mode
-$ npm run start:prod
+**Chromium.** The PDF is rendered by a real browser so that what is filed is
+byte-for-byte the document that was approved in a preview — the same stylesheet,
+not a re-implementation of it. A layout engine that re-implements CSS produces
+something *similar*, and then the stored PDF and the preview disagree and nobody
+can say which is right. That costs a ~100MB browser and the memory to run it,
+and keeping the only caller here means the app never has to have one installed.
+
+**And it must not be able to fail the thing that asked.** The requester commits
+its own work, puts a request on the bus, and whatever happens next happens on its
+own time. A worker that is down for an hour becomes an hour's delay, not an hour
+of missing documents, because the queue is durable.
+
+## The contract
+
+Full types, with the reasoning, in
+[`src/events/events.types.ts`](src/events/events.types.ts) — copy that file into
+the requester to typecheck against it.
+
+**`document.requested`** — what you send:
+
+```jsonc
+{
+  "requestId": "req_01J...",        // yours; echoed on every reply
+  "organizationId": "clx1...",
+  "subject": { "type": "LEASE", "id": "clx4..." },   // becomes the object-key path
+  "html": "<!doctype html>…",       // COMPLETE document, CSS inlined, tokens already filled
+  "fileName": "contract-L-7F3QA.pdf",
+  "render": { "footerText": "Standard tenancy agreement · L-7F3QA" },
+  "meta": { "assetTypeId": "sys_LEASE_CONTRACT" }    // opaque; carried back untouched
+}
 ```
 
-## Run tests
+**`document.generated`** — what comes back:
 
-```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+```jsonc
+{
+  "requestId": "req_01J...",
+  "organizationId": "clx1...",
+  "subject": { "type": "LEASE", "id": "clx4..." },
+  "objectKey": "organizations/clx1.../leases/clx4.../9f8e....pdf",
+  "fileName": "contract-L-7F3QA.pdf",
+  "fileType": "application/pdf",
+  "sizeBytes": 92637,
+  "generatedAt": "2026-09-02T00:00:00.000Z",
+  "meta": { "assetTypeId": "sys_LEASE_CONTRACT" }
+}
 ```
 
-## Deployment
+**`document.failed`** carries `reason`, `message`, `attempts` and `final`. It is
+published on *every* failed attempt, not only the last: a document about to be
+retried and one that has been abandoned need to look different to whoever is
+waiting, and only this worker knows which is which.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+Three things worth knowing about the shape:
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+- **`html` is rendered exactly as given.** No markup or CSS is added. It arrives
+  as a string with no origin, so there is nothing for a `fetch` in it to be
+  same-origin with and nothing remote will load. Sanitizing the markup is the
+  requester's job, before it gets here.
+- **`meta` is opaque and round-trips untouched.** It is how the requester knows
+  which row a result belongs on without keeping its own table of pending renders.
+- **`objectKey` is a path, not a URL.** A URL bakes today's endpoint into
+  whatever row it lands on, and the move from MinIO to R2 becomes a data
+  migration rather than an environment variable.
+
+## Delivery guarantees, plainly
+
+At-least-once, and **this worker does not deduplicate**. A durable queue means
+the same `requestId` may legitimately arrive twice, and only the requester knows
+whether the second render should replace the first or be discarded — so decide
+that on `document.generated`, keyed on `requestId`.
+
+| Outcome | What happens | Why |
+| --- | --- | --- |
+| Rendered and stored | ack, publish `document.generated` | — |
+| Unparseable body | dead-letter, no reply | Will never become parseable, and there is no `requestId` to address a reply to. |
+| Invalid request | dead-letter, reply if it has a `requestId` | Missing `html` will still be missing on a retry. |
+| Render or storage failure | retry once, then dead-letter | Usually transient (a browser that died, a bucket that blinked). Anything that fails twice is not, and requeueing forever would spin this process on one poisoned message while every later request waits behind it. |
+| Stored, but `document.generated` could not be published | **withdraw the object**, then retry | An object nobody was told about is invisible to the requester and impossible for it to clean up. Re-rendering is cheap next to a bucket filling with documents no row points at. |
+
+The retry is a **republish carrying an `x-attempts` header**, not
+`nack(requeue: true)`: a requeued delivery looks brand new, so the counter would
+reset and the retry would never terminate.
+
+## Running it
+
+Needs a RabbitMQ and an S3-compatible bucket. Locally both come from Jarvis's
+compose file:
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+cd ../jarvis && docker compose up -d
+cd ../document-worker
+
+cp .env.example .env
+npm install
+npm run playwright:install   # the browser, once per host
+
+npm run start:dev
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+`GET /health` on `:3400` is the only HTTP surface — it exists because platforms
+decide liveness by polling a port, and it is deliberately shallow. It does not
+check the broker: a broker outage is what `amqplib`'s reconnect loop is *for*,
+and reporting unhealthy through it would have a platform kill a process that is
+recovering correctly.
 
-## Resources
+## Wiring it to Jarvis
 
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+Jarvis is untouched so far — it still publishes `lease.created` and runs its own
+in-process contract worker. [`docs/jarvis-integration.md`](docs/jarvis-integration.md)
+has the exact changes to move it onto this service, and what to delete afterwards.
