@@ -1,9 +1,17 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { RabbitmqModule } from './rabbitmq/rabbitmq.module';
 
 @Module({
-  imports: [],
+  imports: [
+    // Reads `.env` into `process.env`. Global so `RabbitmqService` can inject
+    // `ConfigService` without importing this module itself.
+    ConfigModule.forRoot({ isGlobal: true }),
+    RabbitmqModule,
+  ],
   controllers: [AppController],
   providers: [AppService],
 })
