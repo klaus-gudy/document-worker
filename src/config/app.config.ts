@@ -9,4 +9,16 @@ export default registerAs('app', () => ({
    * to poll. See `HealthController`.
    */
   port: Number(process.env.PORT ?? 3400),
+
+  /**
+   * Whether to serve the OpenAPI docs.
+   *
+   * Off in production unless asked for: the document describes the shape of
+   * everything the service accepts, which is a convenience on an internal
+   * network and a free map on a public one.
+   */
+  swaggerEnabled:
+    process.env.SWAGGER_ENABLED === 'true' ||
+    (process.env.SWAGGER_ENABLED !== 'false' &&
+      process.env.NODE_ENV !== 'production'),
 }));

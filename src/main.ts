@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 
 import { AppModule } from '@/app.module';
+import { setupSwagger, SWAGGER_PATH } from '@/swagger';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
@@ -16,10 +17,23 @@ async function bootstrap() {
    */
   app.enableShutdownHooks();
 
-  const port = app.get(ConfigService).get<number>('app.port', 3400);
+  const config = app.get(ConfigService);
+
+  /*
+   * Off in production by default. The docs describe the shape of everything
+   * this service accepts, which is a courtesy internally and a free map
+   * anywhere else — set `SWAGGER_ENABLED=true` to serve them there deliberately.
+   */
+  const swaggerEnabled = config.get<boolean>('app.swaggerEnabled', true);
+  if (swaggerEnabled) setupSwagger(app);
+
+  const port = config.get<number>('app.port', 3400);
   await app.listen(port);
 
-  logger.log(`listening on :${port} — health at /health`);
+  logger.log(
+    `listening on :${port} — health at /health` +
+      (swaggerEnabled ? `, docs at /${SWAGGER_PATH}` : ''),
+  );
 }
 
 void bootstrap();
