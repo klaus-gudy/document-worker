@@ -17,6 +17,11 @@ import type { DependencyHealth } from '@/common/dependency-health';
 import { withTimeout } from '@/common/dependency-health';
 import rabbitmqConfig from '@/config/rabbitmq.config';
 
+/** Where a queue's rejected messages are held. */
+export function deadLetterQueueOf(queue: string) {
+  return `${queue}.dead`;
+}
+
 /** What a feature module needs to declare to receive its events. */
 export type Subscription = {
   /** The queue this listener owns. One queue per listener, never shared. */
@@ -126,8 +131,31 @@ export class RabbitmqService implements OnModuleInit, OnApplicationShutdown {
     handler: (message: ConsumeMessage) => void | Promise<void>,
   ): Promise<string> {
     const channel = this.getChannel();
+    const deadLetterQueue = deadLetterQueueOf(subscription.queue);
 
-    await channel.assertQueue(subscription.queue, { durable: true });
+    /*
+     * The holding area, declared before the queue that points at it. A
+     * dead-letter exchange with no queue bound behaves exactly like having none
+     * at all — the broker publishes the rejected message, nothing is listening,
+     * and it is dropped just as silently.
+     *
+     * `direct`, not `fanout`: every listener's rejects come through this one
+     * exchange, and a fanout would copy each one into *every* dead queue. The
+     * routing key is the originating queue's own name, so each listener's
+     * failures land only in its own holding area.
+     */
+    await channel.assertExchange(this.config.deadLetterExchange, 'direct', {
+      durable: true,
+    });
+    await channel.assertQueue(deadLetterQueue, { durable: true });
+    await channel.bindQueue(
+      deadLetterQueue,
+      this.config.deadLetterExchange,
+      subscription.queue,
+    );
+
+    await this.assertWorkQueue(subscription.queue);
+
     for (const routingKey of subscription.routingKeys) {
       await channel.bindQueue(
         subscription.queue,
@@ -163,7 +191,49 @@ export class RabbitmqService implements OnModuleInit, OnApplicationShutdown {
       },
     );
 
+    this.logger.log(
+      `rejects from "${subscription.queue}" are held in "${deadLetterQueue}"`,
+    );
+
     return consumerTag;
+  }
+
+  /**
+   * Declares the work queue, with its rejects routed to the holding area.
+   *
+   * **A queue's settings are fixed at creation and cannot be edited.** If one
+   * already exists with different settings — which is exactly what happens the
+   * first time this runs against a broker that knew the queue *before* it had a
+   * dead-letter exchange — the broker refuses with `PRECONDITION_FAILED` and
+   * closes the channel. Nothing is silently reconfigured, and nothing is
+   * silently lost; it simply will not start until someone decides what to do
+   * with the old queue. The catch below turns that into a sentence a person can
+   * act on rather than a bare AMQP code.
+   */
+  private async assertWorkQueue(queue: string) {
+    try {
+      await this.getChannel().assertQueue(queue, {
+        durable: true,
+        deadLetterExchange: this.config.deadLetterExchange,
+        // Routed by the queue's own name so its rejects are told apart from
+        // every other listener's on the shared dead-letter exchange.
+        deadLetterRoutingKey: queue,
+      });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+
+      if (message.includes('PRECONDITION_FAILED')) {
+        this.logger.error(
+          `queue "${queue}" already exists with different settings — almost ` +
+            `certainly from before it had a dead-letter exchange. A queue ` +
+            `cannot be reconfigured in place: drain it, delete it, and let ` +
+            `this service recreate it.\n` +
+            `  docker exec <broker> rabbitmqctl delete_queue ${queue}`,
+        );
+      }
+
+      throw cause;
+    }
   }
 
   getChannel(): Channel {

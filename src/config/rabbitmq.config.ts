@@ -15,6 +15,15 @@ export default registerAs('rabbitmq', () => ({
   exchange: process.env.EVENTS_EXCHANGE ?? 'jarvis.events',
 
   /**
+   * Where rejected messages go instead of being destroyed.
+   *
+   * Derived from the main exchange rather than configured separately: the two
+   * are one topology, and letting them be set independently is how you end up
+   * with a dead-letter exchange nothing is actually pointed at.
+   */
+  deadLetterExchange: `${process.env.EVENTS_EXCHANGE ?? 'jarvis.events'}.dlx`,
+
+  /**
    * How many unacked messages the broker may have in flight to this process.
    * One means a slow handler applies backpressure rather than having the whole
    * queue pushed into memory.
