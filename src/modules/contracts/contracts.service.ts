@@ -1,40 +1,49 @@
 import { Injectable, Logger } from '@nestjs/common';
 
+import {
+  CONTRACT_CONTENT_TYPE,
+  CONTRACT_PDF_OPTIONS,
+} from '@/modules/contracts/contracts.constants';
 import type { LeaseCreatedEvent } from '@/modules/contracts/events/lease-created.event';
+import { PdfService } from '@/modules/pdf/pdf.service';
+import { StorageService } from '@/storage/storage.service';
 
 /**
- * What this application does when a lease is created.
+ * What this application does when a lease is created: render the HTML it was
+ * sent, and put the PDF where it was told to.
  *
- * Separate from the listener on purpose. The listener is a transport adapter —
- * it knows about queues, JSON and acks; this knows about leases and nothing
- * else. Keeping the two apart is what lets this be called from an HTTP route or
- * a test without a broker anywhere near it, and it is the same reason a
- * controller stays thin and delegates to a service.
+ * That is the whole job, and the shortness is the point. The publisher has
+ * already resolved the template, filled in the placeholders and decided the
+ * object key, so there is no database here, no template engine, and no
+ * knowledge of what a lease actually is — only bytes and a destination.
  *
- * Today it displays the payload. Whatever the real work becomes — rendering a
- * contract, notifying a tenant — belongs here, not in the listener.
+ * Separate from the listener on purpose. The listener knows about queues, JSON
+ * and acks; this knows about rendering and storage. Keeping them apart is what
+ * lets this be called from an HTTP route or a test with no broker in sight.
  */
 @Injectable()
 export class ContractsService {
   private readonly logger = new Logger(ContractsService.name);
 
-  handleLeaseCreated(event: LeaseCreatedEvent) {
-    const { tenant, unit, terms } = event;
+  constructor(
+    private readonly pdf: PdfService,
+    private readonly storage: StorageService,
+  ) {}
 
-    const rent =
-      terms?.monthlyRent === undefined
-        ? 'unknown rent'
-        : `${terms.currency ?? ''} ${terms.monthlyRent.toLocaleString('en-US')}`.trim();
+  async handleLeaseCreated(event: LeaseCreatedEvent): Promise<void> {
+    const startedAt = Date.now();
 
-    // A summary first, because that is what is readable when these scroll past.
+    // `CONTRACT_PDF_OPTIONS`, never anything off the message. A stored contract
+    // is a record, and a record laid out however the publisher felt that day is
+    // one nobody can reproduce.
+    const pdf = await this.pdf.render(event.html, CONTRACT_PDF_OPTIONS);
+    const rendered = Date.now();
+
+    await this.storage.putObject(event.objectKey, pdf, CONTRACT_CONTENT_TYPE);
+
     this.logger.log(
-      `${tenant?.name ?? 'unknown tenant'} → ${unit?.label ?? '?'} at ` +
-        `${unit?.property ?? '?'}, ${rent}/month for ` +
-        `${terms?.durationMonths ?? '?'} months (lease ${event.leaseId})`,
+      `stored ${event.objectKey} — ${pdf.byteLength} bytes ` +
+        `(render ${rendered - startedAt}ms, upload ${Date.now() - rendered}ms)`,
     );
-
-    // `log`, not `debug`: seeing the payload is the whole point right now, and
-    // `debug` is filtered out at the default log level.
-    this.logger.log(`payload:\n${JSON.stringify(event, null, 2)}`);
   }
 }

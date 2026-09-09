@@ -1,78 +1,37 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty } from '@nestjs/swagger';
 
 /**
  * The shape of a `lease.created` message.
  *
- * **Classes rather than a plain `type`, purely so Swagger can see them.**
- * TypeScript types are erased at compile time; `@nestjs/swagger` reflects over
- * class metadata, so a `type` would leave the queue contract undocumented. The
- * runtime cost is nil — nothing here is instantiated, these are used as type
- * annotations on a `JSON.parse` result, which structural typing allows.
+ * **The publisher has already decided what the document says and where it
+ * goes.** It sends finished HTML and the exact object key to store the result
+ * under; this worker renders and uploads. Nothing here resolves a template,
+ * reads a database, or invents a key — that keeps the worker free of any
+ * domain model, and leaves the publisher as the only thing that owns where a
+ * contract belongs.
  *
- * There are deliberately **no `class-validator` decorators**. This arrives off a
- * queue, not out of an HTTP request, so Nest's `ValidationPipe` never runs
- * against it. Decorating it as if it validated would be a comforting lie; the
- * listener checks what it needs and treats the rest as data.
+ * A class rather than a `type` so `@nestjs/swagger` can reflect over it —
+ * TypeScript types are erased at compile time. There are deliberately no
+ * `class-validator` decorators: this arrives off a queue, not an HTTP request,
+ * so `ValidationPipe` never runs against it. `LeaseCreatedListener` checks it
+ * by hand.
  */
-export class LeaseTenant {
-  @ApiProperty({ example: 'Hassan Said' })
-  name: string;
-
-  @ApiPropertyOptional({ example: 'hassan.said@example.com' })
-  email?: string;
-
-  @ApiPropertyOptional({ example: '+255754112233' })
-  phone?: string;
-}
-
-export class LeaseUnit {
-  @ApiProperty({ example: 'Z4' })
-  label: string;
-
-  @ApiProperty({ example: 'Likely Apartments' })
-  property: string;
-
-  @ApiPropertyOptional({ example: 'Buguruni, Dar es Salaam' })
-  address?: string;
-}
-
-export class LeaseTerms {
-  @ApiProperty({ example: '2026-09-08', description: 'ISO date' })
-  startDate: string;
-
-  @ApiProperty({ example: '2027-03-08', description: 'ISO date' })
-  endDate: string;
-
-  @ApiProperty({ example: 6 })
-  durationMonths: number;
-
-  @ApiProperty({ example: 190000, description: 'Minor-unit-free whole amount' })
-  monthlyRent: number;
-
-  @ApiProperty({ example: 'TZS', description: 'ISO 4217 code' })
-  currency: string;
-}
-
 export class LeaseCreatedEvent {
-  @ApiProperty({ example: 'lease_c6bd5b92' })
-  leaseId: string;
-
-  @ApiProperty({ example: 'org_bahari_properties' })
-  organizationId: string;
-
-  @ApiProperty({ type: LeaseTenant })
-  tenant: LeaseTenant;
-
-  @ApiProperty({ type: LeaseUnit })
-  unit: LeaseUnit;
-
-  @ApiProperty({ type: LeaseTerms })
-  terms: LeaseTerms;
+  @ApiProperty({
+    description:
+      'A complete HTML document, stylesheet inlined. Rendered exactly as ' +
+      'given — nothing is added to it.',
+    example:
+      '<html><body><h1>Lease Agreement</h1><p>Tenant: Asha Mushi</p><p>Rent: TZS 500,000</p></body></html>',
+  })
+  html: string;
 
   @ApiProperty({
-    example: '2026-09-08T06:21:08.122Z',
     description:
-      'ISO 8601. Lets a listener notice it is working through a backlog.',
+      'Where the rendered PDF is stored, as a path within the bucket. Chosen ' +
+      'by the publisher, which is the side that knows what the document ' +
+      'belongs to.',
+    example: 'organizations/org-123/leases/lease-456/contracts/asset-789.pdf',
   })
-  occurredAt: string;
+  objectKey: string;
 }

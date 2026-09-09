@@ -8,6 +8,12 @@ export type RenderOptions = {
   /** Any Playwright page format. Defaults to A4. */
   format?: string;
   landscape?: boolean;
+  /**
+   * Whether the document's own shading prints. Defaults to true: a
+   * highlighted figure or a filled table header is content, not decoration,
+   * and without this every coloured block comes out white.
+   */
+  printBackground?: boolean;
   margin?: { top?: string; bottom?: string; left?: string; right?: string };
   /**
    * Whether the page may fetch anything over the network. **Off by default** —
@@ -30,11 +36,16 @@ export type RenderOptions = {
  * the host (`npx playwright install chromium`), which is precisely the reason
  * a job like this belongs in its own service rather than inside a web app.
  */
+/**
+ * The house page margins, matching `CONTRACT_PDF_OPTIONS`. Kept in step
+ * deliberately: a document rendered through the HTTP endpoint to check how it
+ * looks should come out the same shape as one the worker files.
+ */
 const DEFAULT_MARGIN = {
-  top: '18mm',
+  top: '20mm',
+  right: '15mm',
   bottom: '20mm',
-  left: '16mm',
-  right: '16mm',
+  left: '15mm',
 } as const;
 
 @Injectable()
@@ -112,9 +123,7 @@ export class PdfService implements OnApplicationShutdown {
       return await page.pdf({
         format: options.format ?? 'A4',
         landscape: options.landscape ?? false,
-        // The document's own background is content, not decoration — without
-        // this, every coloured block and highlight prints white.
-        printBackground: true,
+        printBackground: options.printBackground ?? true,
         margin: { ...DEFAULT_MARGIN, ...options.margin },
         displayHeaderFooter: Boolean(options.footerText),
         headerTemplate: '<span></span>',

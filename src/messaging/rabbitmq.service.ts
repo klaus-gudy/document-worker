@@ -123,7 +123,7 @@ export class RabbitmqService implements OnModuleInit, OnApplicationShutdown {
    */
   async subscribe(
     subscription: Subscription,
-    handler: (message: ConsumeMessage) => void,
+    handler: (message: ConsumeMessage) => void | Promise<void>,
   ): Promise<string> {
     const channel = this.getChannel();
 
@@ -142,7 +142,24 @@ export class RabbitmqService implements OnModuleInit, OnApplicationShutdown {
         // A null delivery means the consumer was cancelled broker-side — there
         // is nothing to ack and nothing to handle.
         if (!message) return;
-        handler(message);
+
+        /*
+         * A handler is allowed to be async, and `consume` cannot await it — so
+         * a rejected promise would otherwise surface as an unhandled rejection
+         * and, depending on the Node flags, take the process down. Listeners
+         * are expected to catch their own failures; this is the net under that,
+         * not a substitute for it, and it leaves the message unacked rather
+         * than guessing whether to ack or reject on the listener's behalf.
+         */
+        const result = handler(message);
+        if (result instanceof Promise) {
+          result.catch((error: unknown) =>
+            this.logger.error(
+              `unhandled error from the ${subscription.queue} handler: ` +
+                (error instanceof Error ? error.message : String(error)),
+            ),
+          );
+        }
       },
     );
 

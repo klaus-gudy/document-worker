@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { MessagingModule } from '@/messaging/messaging.module';
 import { ContractsService } from '@/modules/contracts/contracts.service';
 import { LeaseCreatedListener } from '@/modules/contracts/listeners/lease-created.listener';
+import { PdfModule } from '@/modules/pdf/pdf.module';
 import { StorageModule } from '@/storage/storage.module';
 
 /**
@@ -11,14 +12,13 @@ import { StorageModule } from '@/storage/storage.module';
  * `invoice.created` listener later means a new feature module, not an edit to
  * the transport.
  *
- * `StorageModule` is imported here, not injected anywhere yet. This module is
- * where a generated contract will eventually be uploaded, so this is where the
- * dependency belongs — the import alone is enough for Nest to instantiate
- * `StorageService` and run its startup bucket check, ahead of anything actually
- * calling it.
+ * `PdfModule` and `StorageModule` are the two halves of the work: render, then
+ * upload. Both are shared singletons — importing `PdfModule` here reaches the
+ * same `PdfService`, and so the same one Chromium, that the HTTP endpoint uses
+ * rather than launching a second browser.
  */
 @Module({
-  imports: [MessagingModule, StorageModule],
+  imports: [MessagingModule, PdfModule, StorageModule],
   providers: [ContractsService, LeaseCreatedListener],
   exports: [ContractsService],
 })
