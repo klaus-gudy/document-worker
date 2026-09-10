@@ -18,7 +18,7 @@ export default registerAs('rabbitmq', () => ({
    * Nothing publishes to a queue directly — publishers address this exchange,
    * and the bindings below decide which queues get a copy.
    */
-  exchange: process.env.EVENTS_EXCHANGE ?? 'jarvis.events',
+  exchange: process.env.EVENT_EXCHANGE ?? 'jarvis.events',
 
   /**
    * **This worker's own mailbox.** Named for *who consumes*, deliberately in
@@ -26,7 +26,7 @@ export default registerAs('rabbitmq', () => ({
    * and the event are different things, and naming the queue after the event
    * is what made them look like one.
    */
-  queue: process.env.DOCUMENT_WORKER_QUEUE ?? 'DOCUMENT_WORKER_QUEUE',
+  queue: process.env.EVENT_QUEUE ?? 'DOCUMENT_WORKER_QUEUE',
 
   /**
    * **The event this worker listens for** — a label describing what happened,
@@ -38,7 +38,7 @@ export default registerAs('rabbitmq', () => ({
    * message to no queue at all and drops it, which is the quietest possible
    * failure. Change it only alongside the publisher.
    */
-  routingKey: process.env.LEASE_CREATED_ROUTING_KEY ?? 'lease.created',
+  routingKey: process.env.EVENT_ROUTING_KEY ?? 'lease.created',
 
   /**
    * Where rejected messages go instead of being destroyed.
@@ -47,13 +47,13 @@ export default registerAs('rabbitmq', () => ({
    * are one topology, and letting them be set independently is how you end up
    * with a dead-letter exchange nothing is actually pointed at.
    */
-  deadLetterExchange: `${process.env.EVENTS_EXCHANGE ?? 'jarvis.events'}.dlx`,
+  deadLetterExchange: `${process.env.EVENT_EXCHANGE ?? 'jarvis.events'}.dlx`,
 
   /**
    * Where this worker's rejected messages are held. Derived from the queue name
    * rather than set separately, so the pair cannot drift apart.
    */
-  deadLetterQueue: `${process.env.DOCUMENT_WORKER_QUEUE ?? 'DOCUMENT_WORKER_QUEUE'}_DEAD`,
+  deadLetterQueue: `${process.env.EVENT_QUEUE ?? 'DOCUMENT_WORKER_QUEUE'}_DEAD`,
 
   /**
    * How many unacked messages the broker may have in flight to this process.
