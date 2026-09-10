@@ -115,6 +115,36 @@ export class RabbitmqService implements OnModuleInit, OnApplicationShutdown {
   }
 
   /**
+   * Publishes one event onto the exchange, for anything bound to hear it.
+   *
+   * Fire-and-forget on purpose — this channel is never put into confirm mode,
+   * so a successful call means the broker accepted the frame, not that a
+   * queue received a copy. That is deliberately the same guarantee every
+   * consumer of this method already lives with for its own delivery: this app
+   * publishes nothing that anything downstream currently blocks on, so the
+   * cost of upgrading to publisher confirms has no buyer yet. Revisit if that
+   * changes.
+   *
+   * The boolean `channel.publish` returns is a *backpressure* signal — `false`
+   * means the channel's internal write buffer is full, not that the message
+   * was lost — so it is logged, not treated as failure.
+   */
+  publish(routingKey: string, payload: unknown) {
+    const ok = this.getChannel().publish(
+      this.config.exchange,
+      routingKey,
+      Buffer.from(JSON.stringify(payload)),
+      { contentType: 'application/json', persistent: true },
+    );
+
+    if (!ok) {
+      this.logger.warn(
+        `publish to "${routingKey}" reported backpressure — the channel's write buffer is full`,
+      );
+    }
+  }
+
+  /**
    * Declares a listener's queue, binds it, and starts delivering.
    *
    * The queue is durable and the binding is re-asserted on every boot, so a

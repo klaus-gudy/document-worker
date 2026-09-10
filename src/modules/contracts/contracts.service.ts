@@ -30,7 +30,23 @@ export class ContractsService {
     private readonly storage: StorageService,
   ) {}
 
-  async handleLeaseCreated(event: LeaseCreatedEvent): Promise<void> {
+  /**
+   * Renders and stores the document, and reports back what landed where.
+   *
+   * The return value is deliberately everything a caller would need to
+   * announce completion to something else — object key, content type, size,
+   * timestamp — without this service knowing that announcing is a thing that
+   * happens. That stays the listener's job: publishing is a broker concern,
+   * and injecting `RabbitmqService` here would mean this could no longer be
+   * exercised from an HTTP route or a test with no broker in sight, which is
+   * the whole reason it is separate from the listener to begin with.
+   */
+  async handleLeaseCreated(event: LeaseCreatedEvent): Promise<{
+    objectKey: string;
+    contentType: string;
+    sizeBytes: number;
+    storedAt: string;
+  }> {
     const startedAt = Date.now();
 
     // `CONTRACT_PDF_OPTIONS`, never anything off the message. A stored contract
@@ -40,10 +56,18 @@ export class ContractsService {
     const rendered = Date.now();
 
     await this.storage.putObject(event.objectKey, pdf, CONTRACT_CONTENT_TYPE);
+    const storedAt = new Date().toISOString();
 
     this.logger.log(
       `stored ${event.objectKey} — ${pdf.byteLength} bytes ` +
         `(render ${rendered - startedAt}ms, upload ${Date.now() - rendered}ms)`,
     );
+
+    return {
+      objectKey: event.objectKey,
+      contentType: CONTRACT_CONTENT_TYPE,
+      sizeBytes: pdf.byteLength,
+      storedAt,
+    };
   }
 }

@@ -104,4 +104,17 @@ describe('ContractsService', () => {
     expect(logged[0]).toContain(event.objectKey);
     expect(logged[0]).toContain(`${pdfBytes.byteLength} bytes`);
   });
+
+  it('returns everything a caller needs to announce completion elsewhere', async () => {
+    // This is what `LeaseCreatedListener` publishes on `document.stored`. It
+    // has to come from here rather than the listener reconstructing it,
+    // because the listener never touches the rendered bytes and has no other
+    // way to know their size or when the upload actually finished.
+    const result = await service.handleLeaseCreated(event);
+
+    expect(result.objectKey).toBe(event.objectKey);
+    expect(result.contentType).toBe('application/pdf');
+    expect(result.sizeBytes).toBe(pdfBytes.byteLength);
+    expect(new Date(result.storedAt).toISOString()).toBe(result.storedAt);
+  });
 });

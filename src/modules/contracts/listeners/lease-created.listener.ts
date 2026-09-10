@@ -15,6 +15,7 @@ import {
 import rabbitmqConfig from '@/config/rabbitmq.config';
 import { RabbitmqService } from '@/messaging/rabbitmq.service';
 import { ContractsService } from '@/modules/contracts/contracts.service';
+import type { DocumentStoredEvent } from '@/modules/contracts/events/document-stored.event';
 import type { LeaseCreatedEvent } from '@/modules/contracts/events/lease-created.event';
 
 /**
@@ -105,14 +106,16 @@ export class LeaseCreatedListener implements OnApplicationBootstrap {
       return;
     }
 
+    let result: DocumentStoredEvent;
     try {
-      await this.contracts.handleLeaseCreated(event);
+      result = await this.contracts.handleLeaseCreated(event);
     } catch (error) {
       /*
-       * Rejected, not requeued — which for this queue means the message is
-       * *discarded*, because no dead-letter exchange is bound to it. That is
-       * acceptable for a bad payload and plainly wrong for a MinIO outage, and
-       * the two are not told apart here yet. See the note in the README.
+       * Rejected, not requeued. This queue has a dead-letter exchange bound to
+       * it (see `RabbitmqService.subscribe`), so the message is held rather
+       * than discarded — a person can inspect and replay it once whatever
+       * failed (a bad payload, a MinIO outage) is fixed. The two causes are not
+       * told apart here yet, so both currently take the same path.
        */
       this.fail(
         routingKey,
@@ -126,8 +129,19 @@ export class LeaseCreatedListener implements OnApplicationBootstrap {
       return;
     }
 
+    /*
+     * Announced before the ack, not after — but its own failure does not
+     * reject the message. The document is already safely in the bucket by
+     * this point; requeueing it because nobody heard about it would re-render
+     * and re-upload a file that already exists, which is strictly worse than
+     * the announcement simply being missed once. `RabbitmqService.publish`
+     * already logs its own failure, so nothing here needs to.
+     */
+    this.rabbitmq.publish(this.config.completionRoutingKey, result);
+
     this.logger.log(
-      `[PROCESSED] ${routingKey} +${Date.now() - startedAt}ms — acked`,
+      `[PROCESSED] ${routingKey} +${Date.now() - startedAt}ms — acked, ` +
+        `announced on "${this.config.completionRoutingKey}"`,
     );
     this.logger.log(`${SEPARATOR}\n`);
 

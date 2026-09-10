@@ -15,7 +15,7 @@
 import { connect } from 'amqplib';
 import { randomUUID } from 'node:crypto';
 
-const URL = process.env.RABBITMQ_URL ?? 'amqp://guest:guest@localhost:5673';
+const URL = process.env.RABBITMQ_URL ?? 'amqp://guest:guest@localhost:5682';
 const EXCHANGE = process.env.EVENT_EXCHANGE ?? 'jarvis.events';
 const ROUTING_KEY = process.env.EVENT_ROUTING_KEY ?? 'lease.created';
 

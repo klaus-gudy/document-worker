@@ -9,7 +9,7 @@ import { registerAs } from '@nestjs/config';
  * the pattern Nest's own config docs lead with for exactly this reason.
  */
 export default registerAs('rabbitmq', () => ({
-  url: process.env.RABBITMQ_URL ?? 'amqp://guest:guest@localhost:5673',
+  url: process.env.RABBITMQ_URL ?? 'amqp://guest:guest@localhost:5682',
 
   /**
    * The exchange every event is published to. A *topic* exchange, so a future
@@ -39,6 +39,21 @@ export default registerAs('rabbitmq', () => ({
    * failure. Change it only alongside the publisher.
    */
   routingKey: process.env.EVENT_ROUTING_KEY ?? 'lease.created',
+
+  /**
+   * **The event this worker announces once a document is stored.** A separate
+   * key from `routingKey` above, deliberately — this worker consumes one event
+   * and produces a different one, and giving them the same name the moment
+   * both existed would have made the direction of each message ambiguous from
+   * the config alone.
+   *
+   * Nobody has to bind anything to hear it; an unbound routing key on a topic
+   * exchange is a normal, silent no-op, not an error. It exists for whichever
+   * publisher wants to know the render finished — matched back to its own
+   * request by the `objectKey` it chose in the first place.
+   */
+  completionRoutingKey:
+    process.env.EVENT_COMPLETION_ROUTING_KEY ?? 'document.stored',
 
   /**
    * Where rejected messages go instead of being destroyed.
