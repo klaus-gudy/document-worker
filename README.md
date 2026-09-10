@@ -1,98 +1,141 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# document-worker
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Renders HTML to PDF and puts it in object storage. That is the whole job.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+It holds no domain model — no leases, no tenants, no database. A publisher
+decides what a document says and where it belongs; this renders what it is
+handed and stores it at the key it is given. That separation is the point: it
+is what keeps a ~100MB headless browser out of the app that owns the data.
 
-## Description
+## The message contract
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+Consumes **`lease.created`** from the topic exchange `jarvis.events`, on its own
+queue `DOCUMENT_WORKER_QUEUE`. Plain JSON, no framework envelope.
 
-## Project setup
-
-```bash
-$ npm install
+```json
+{
+  "html": "<!DOCTYPE html><html><head><style>…</style></head><body>…</body></html>",
+  "objectKey": "organizations/<orgId>/leases/<leaseId>/<uuid>.pdf",
+  "footerText": "Standard tenancy agreement · L-LWX8G",
+  "meta": { "leaseId": "lease-456", "fileName": "contract-L-LWX8G.pdf" }
+}
 ```
 
-## Compile and run the project
+| Field | Required | Notes |
+|---|---|---|
+| `html` | **yes** | A **complete** document with the stylesheet **inlined**. Rendered exactly as given — nothing is added. Remote content is blocked at the network layer, so a `<link>` to a stylesheet silently will not load and you will file an unstyled document. |
+| `objectKey` | **yes** | Honoured verbatim. This service invents no keys, so the publisher's scheme is the only one in the bucket. |
+| `footerText` | no | Printed at the foot of every page beside a page counter. Trimmed, capped at 200 chars; absent or blank means no footer at all. |
+| `meta` | no | **Opaque.** Anything the publisher wants handed back on `document.stored`. Never read, parsed or acted on here — that is what lets it carry a lease id without this service learning what a lease is. Keep it small: it rides on every message and returns on every completion. |
 
-```bash
-# development
-$ npm run start
+A message missing `html` or `objectKey` is rejected to
+`DOCUMENT_WORKER_QUEUE_DEAD` — it will still be missing them on a redelivery.
+Inspect the holding area with `npm run dead-letters`.
 
-# watch mode
-$ npm run start:dev
+**Layout is this service's, content is the publisher's.** `CONTRACT_PDF_OPTIONS`
+fixes the format and margins (A4, 18/16/20/16mm) and a message cannot override
+them — a test asserts a message carrying `format` or `margin` is ignored, because
+a stored contract is a record and one laid out however the publisher felt that
+day is one nobody can reproduce. `footerText` is the deliberate exception, and
+it is an exception about *words*: a template name and a reference this service
+could not invent without the domain model it does not have. `meta` is not an
+exception at all, because it never reaches the renderer.
 
-# production mode
-$ npm run start:prod
+`PdfService`'s own `DEFAULT_MARGIN` is kept in step with `CONTRACT_PDF_OPTIONS`
+on purpose, so a document rendered through the HTTP route to see how it looks
+comes out the same shape as one the queue files.
+
+### What it announces
+
+After the upload succeeds, publishes **`document.stored`** to the same exchange:
+
+```json
+{
+  "objectKey": "organizations/<orgId>/leases/<leaseId>/<uuid>.pdf",
+  "contentType": "application/pdf",
+  "sizeBytes": 104207,
+  "storedAt": "2026-09-11T09:14:02.000Z",
+  "meta": { "leaseId": "lease-456", "fileName": "contract-L-LWX8G.pdf" }
+}
 ```
 
-## Run tests
+**This service still holds no domain model.** The four fields above are
+everything it knows on its own — where the bytes went, what they are, how many,
+and when. `meta` is whatever the request carried, returned untouched; it is
+omitted entirely (not sent as `{}`) when the request carried none, so a
+publisher can tell "nothing was sent" from "an empty object was".
+
+`objectKey` is a correlation id in its own right and is always present, so a
+publisher that sends no `meta` can still match a completion to its request.
+Nothing has to bind to this routing key; an unbound key on a topic exchange is a
+silent no-op, not an error.
+
+Message ordering matters and is deliberate: the object is written **before** the
+announcement, so a failure between the two leaves an orphaned object rather than
+a record pointing at bytes that are not there.
+
+## HTTP
+
+Also renders over HTTP, which is how you check what a document looks like
+without publishing anything:
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+curl -X POST http://localhost:3400/api/v1/pdf/render \
+  -H 'Content-Type: application/json' \
+  -d '{"html":"<!doctype html><html><body><h1>Hi</h1></body></html>","footerText":"Demo · 1"}' \
+  --output out.pdf
 ```
 
-## Deployment
+`GET /health` reports the broker and the bucket. API docs at `/docs`.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+## Running it
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+npm install          # postinstall fetches Chromium
+npm run start:dev
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+`.env` — see `.env.example`. The defaults point at the infrastructure in the
+publisher's `docker-compose.yml`:
 
-## Resources
+| Variable | Default | Notes |
+|---|---|---|
+| `RABBITMQ_URL` | `amqp://guest:guest@localhost:5682` | **Port 5682**, not 5672 — that compose file shifts it so it cannot collide with a broker already running locally. |
+| `EVENT_EXCHANGE` | `jarvis.events` | Topic. |
+| `EVENT_QUEUE` | `DOCUMENT_WORKER_QUEUE` | This service's mailbox. Dead letters go to `<queue>_DEAD`. |
+| `EVENT_ROUTING_KEY` | `lease.created` | **A contract with the publisher, not a preference.** Get it wrong and the exchange routes to no queue and drops the message silently. Change both sides together. |
+| `EVENT_COMPLETION_ROUTING_KEY` | `document.stored` | What it announces on. |
+| `STORAGE_*` | MinIO on `:9000`, bucket `jarvis-files` | Same S3 API as R2, so production is a config change. |
 
-Check out a few resources that may come in handy when working with NestJS:
+```bash
+npm run publish:lease            # publish a sample message
+npm run publish:lease -- --count 3
+npm run dead-letters             # inspect the holding area
+npm test
+```
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+### A note on the dead-letter exchange
 
-## Support
+`jarvis.events.dlx` is asserted **`direct`**, and the publisher must agree — an
+exchange's type is fixed at creation, so if one side declares `fanout` the other
+gets `PRECONDITION_FAILED` and loses its channel. `direct` is the right type
+here: rejects are routed by the originating queue's own name, so each consumer's
+failures land in its own holding area instead of a fanout copying every reject
+into all of them.
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+A queue's arguments are likewise fixed at creation. If this service refuses to
+start with `PRECONDITION_FAILED`, the queue predates its dead-letter settings —
+drain it, delete it, and let it be recreated:
 
-## Stay in touch
+```bash
+docker exec <broker> rabbitmqctl delete_queue DOCUMENT_WORKER_QUEUE
+```
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+## Known gaps
 
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+- **No reconnect.** A dropped broker connection stays dropped until the process
+  restarts; `GET /health` is what makes that visible rather than silent.
+- **A bad payload and a storage outage take the same path.** Both are rejected
+  to the dead-letter queue, where the second really wants a retry.
+- **No cap on `html` from the queue.** The HTTP route caps it at 5MB via
+  `RenderPdfDto`; a queue message never passes through `ValidationPipe`.

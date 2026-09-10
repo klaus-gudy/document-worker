@@ -42,10 +42,10 @@ export type RenderOptions = {
  * looks should come out the same shape as one the worker files.
  */
 const DEFAULT_MARGIN = {
-  top: '20mm',
-  right: '15mm',
+  top: '18mm',
+  right: '16mm',
   bottom: '20mm',
-  left: '15mm',
+  left: '16mm',
 } as const;
 
 @Injectable()

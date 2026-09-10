@@ -1,6 +1,9 @@
 import { Logger } from '@nestjs/common';
 
-import { CONTRACT_PDF_OPTIONS } from '@/modules/contracts/contracts.constants';
+import {
+  CONTRACT_PDF_OPTIONS,
+  FOOTER_TEXT_MAX,
+} from '@/modules/contracts/contracts.constants';
 import { ContractsService } from '@/modules/contracts/contracts.service';
 import type { LeaseCreatedEvent } from '@/modules/contracts/events/lease-created.event';
 import type { PdfService } from '@/modules/pdf/pdf.service';
@@ -51,22 +54,63 @@ describe('ContractsService', () => {
     expect(render).toHaveBeenCalledWith(event.html, expect.anything());
   });
 
-  it('always renders with the fixed contract options, never anything per-message', async () => {
-    await service.handleLeaseCreated(event);
-
+  it('always lays the page out the same way, whatever the message says', async () => {
     // The point of pinning these: a stored contract is a record, and one laid
-    // out however the publisher felt that day cannot be reproduced.
+    // out however the publisher felt that day cannot be reproduced. A message
+    // carrying layout is ignored rather than honoured.
+    await service.handleLeaseCreated({
+      ...event,
+      format: 'A5',
+      landscape: true,
+      margin: { top: '0mm' },
+      allowRemoteContent: true,
+    } as LeaseCreatedEvent);
+
     expect(render).toHaveBeenCalledWith(event.html, CONTRACT_PDF_OPTIONS);
     expect(CONTRACT_PDF_OPTIONS).toEqual({
       format: 'A4',
       printBackground: true,
       margin: {
-        top: '20mm',
-        right: '15mm',
+        top: '18mm',
+        right: '16mm',
         bottom: '20mm',
-        left: '15mm',
+        left: '16mm',
       },
     });
+  });
+
+  it('prints the footer text the message supplied, alongside the fixed layout', async () => {
+    // The one exception to the rule above, and it is about *content*: the
+    // template name and contract reference are things only the publisher
+    // knows. Everything around them is still this service's to decide.
+    await service.handleLeaseCreated({
+      ...event,
+      footerText: 'Standard tenancy agreement · L-LWX8G',
+    });
+
+    expect(render).toHaveBeenCalledWith(event.html, {
+      ...CONTRACT_PDF_OPTIONS,
+      footerText: 'Standard tenancy agreement · L-LWX8G',
+    });
+  });
+
+  it('renders no footer when the message does not ask for one', async () => {
+    // Not `footerText: ''` — an empty template still sets displayHeaderFooter,
+    // which draws the page counter with nothing beside it.
+    await service.handleLeaseCreated({ ...event, footerText: '   ' });
+
+    const options = render.mock.calls[0]?.[1] as { footerText?: string };
+    expect(options.footerText).toBeUndefined();
+    expect(options).toEqual(CONTRACT_PDF_OPTIONS);
+  });
+
+  it('truncates a runaway footer rather than refusing to file the contract', async () => {
+    // A queue message never passes through `ValidationPipe`, so the cap the
+    // HTTP route gets from `RenderPdfDto` has to be applied here too.
+    await service.handleLeaseCreated({ ...event, footerText: 'x'.repeat(500) });
+
+    const options = render.mock.calls[0]?.[1] as { footerText?: string };
+    expect(options.footerText).toHaveLength(FOOTER_TEXT_MAX);
   });
 
   it('stores the rendered bytes under the key the message chose', async () => {
@@ -103,6 +147,46 @@ describe('ContractsService', () => {
 
     expect(logged[0]).toContain(event.objectKey);
     expect(logged[0]).toContain(`${pdfBytes.byteLength} bytes`);
+  });
+
+  it('hands the publisher meta back untouched', async () => {
+    // The point of the field: this service carries the publisher's ids without
+    // ever learning what they mean. Nested and oddly-shaped on purpose — an
+    // echo that reshapes anything is not an echo.
+    const meta = {
+      organizationId: 'org-123',
+      leaseId: 'lease-456',
+      missing: ['tenant_nidaNumber'],
+      nested: { deep: [1, { two: true }] },
+    };
+
+    const result = await service.handleLeaseCreated({ ...event, meta });
+
+    expect(result.meta).toEqual(meta);
+  });
+
+  it('omits meta entirely when the request carried none', async () => {
+    // Not `meta: {}` — a publisher checking whether it got its own data back
+    // should be able to tell "nothing was sent" from "an empty object was".
+    const result = await service.handleLeaseCreated(event);
+
+    expect('meta' in result).toBe(false);
+  });
+
+  it('never lets meta influence the render or the upload', async () => {
+    // It is opaque. A publisher cannot smuggle layout or a destination through
+    // it, which is the whole reason it can be accepted unvalidated.
+    await service.handleLeaseCreated({
+      ...event,
+      meta: { objectKey: 'somewhere/else.pdf', format: 'A5', footerText: 'no' },
+    });
+
+    expect(render).toHaveBeenCalledWith(event.html, CONTRACT_PDF_OPTIONS);
+    expect(putObject).toHaveBeenCalledWith(
+      event.objectKey,
+      pdfBytes,
+      'application/pdf',
+    );
   });
 
   it('returns everything a caller needs to announce completion elsewhere', async () => {

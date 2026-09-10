@@ -8,9 +8,10 @@
  * topic exchange — no framework envelope — which is exactly what the listener
  * is written to accept.
  *
- * The payload is deliberately just the finished HTML and the destination key:
+ * The payload is deliberately just the finished HTML and the destination key —
  * the publisher owns the template and decides where a contract belongs, and the
- * worker only renders and uploads.
+ * worker only renders and uploads. `footerText` is the one optional extra, and
+ * it is content rather than layout: see `LeaseCreatedEvent`.
  */
 import { connect } from 'amqplib';
 import { randomUUID } from 'node:crypto';
@@ -43,6 +44,9 @@ function sampleEvent(index) {
       `<p>Rent: TZS ${tenant.rent}</p>` +
       `</body></html>`,
     objectKey: `organizations/${organizationId}/leases/${leaseId}/contracts/${assetId}.pdf`,
+    // Optional. The page layout is the worker's; these words are the
+    // publisher's, because only it knows the template name and the reference.
+    footerText: `Sample tenancy agreement · ${leaseId.slice(-5).toUpperCase()}`,
   };
 }
 

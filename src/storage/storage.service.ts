@@ -23,12 +23,13 @@ import storageConfig from '@/config/storage.config';
  * provider-specific, which is the point — moving to R2 later is an environment
  * variable, not a code change.
  *
- * **Generic on purpose.** This app does not yet generate documents; it only
- * receives `lease.created` and logs it. Rather than guess at a shape for
- * "contracts" that does not exist yet, this exposes `putObject` / `getObject` /
- * `deleteObject` and a plain key builder — whatever produces a document later
- * (a PDF render, an export, anything) calls these directly instead of this
- * service knowing about leases, contracts, or any other domain concept.
+ * **Generic on purpose.** It knows nothing about leases or contracts: it
+ * exposes `putObject` / `getObject` / `deleteObject` and takes the key it is
+ * given. `ContractsService` is its caller today, handing it a key the
+ * *publisher* chose — so the one thing this must not do is invent a layout of
+ * its own, which would put a second key scheme in a bucket that already has
+ * one. Anything that generates a document later (an export, a receipt) calls
+ * these the same way.
  */
 @Injectable()
 export class StorageService implements OnModuleInit, OnApplicationShutdown {
