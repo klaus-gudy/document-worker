@@ -1,8 +1,9 @@
-import { Logger, ValidationPipe } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 
 import { AppModule } from '@/app.module';
+import { configureApp } from '@/configure-app';
 import { setupSwagger, SWAGGER_PATH } from '@/swagger';
 
 async function bootstrap() {
@@ -18,17 +19,7 @@ async function bootstrap() {
   app.enableShutdownHooks();
 
   const config = app.get(ConfigService);
-  const apiPrefix = config.get<string>('app.apiPrefix', 'api/v1');
-
-  app.setGlobalPrefix(apiPrefix, { exclude: ['health'] });
-
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-    }),
-  );
+  const { apiPrefix } = configureApp(app);
 
   const swaggerEnabled = config.get<boolean>('app.swaggerEnabled', true);
   if (swaggerEnabled) setupSwagger(app);
