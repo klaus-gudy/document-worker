@@ -17,7 +17,7 @@ import { randomUUID } from 'node:crypto';
 
 const URL = process.env.RABBITMQ_URL ?? 'amqp://guest:guest@localhost:5673';
 const EXCHANGE = 'jarvis.events';
-const ROUTING_KEY = 'lease.created';
+const ROUTING_KEY = process.env.LEASE_CREATED_ROUTING_KEY ?? 'lease.created';
 
 const countFlag = process.argv.indexOf('--count');
 const count = countFlag === -1 ? 1 : Number(process.argv[countFlag + 1]) || 1;

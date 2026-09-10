@@ -17,11 +17,6 @@ import type { DependencyHealth } from '@/common/dependency-health';
 import { withTimeout } from '@/common/dependency-health';
 import rabbitmqConfig from '@/config/rabbitmq.config';
 
-/** Where a queue's rejected messages are held. */
-export function deadLetterQueueOf(queue: string) {
-  return `${queue}.dead`;
-}
-
 /** What a feature module needs to declare to receive its events. */
 export type Subscription = {
   /** The queue this listener owns. One queue per listener, never shared. */
@@ -131,7 +126,7 @@ export class RabbitmqService implements OnModuleInit, OnApplicationShutdown {
     handler: (message: ConsumeMessage) => void | Promise<void>,
   ): Promise<string> {
     const channel = this.getChannel();
-    const deadLetterQueue = deadLetterQueueOf(subscription.queue);
+    const deadLetterQueue = this.config.deadLetterQueue;
 
     /*
      * The holding area, declared before the queue that points at it. A

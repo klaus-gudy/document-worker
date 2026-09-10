@@ -1,4 +1,10 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  OnApplicationBootstrap,
+} from '@nestjs/common';
+import type { ConfigType } from '@nestjs/config';
 import type { ConsumeMessage } from 'amqplib';
 
 import {
@@ -6,11 +12,8 @@ import {
   SEPARATOR,
   truncate,
 } from '@/common/logging/log-format';
+import rabbitmqConfig from '@/config/rabbitmq.config';
 import { RabbitmqService } from '@/messaging/rabbitmq.service';
-import {
-  LEASE_CREATED,
-  LEASE_CREATED_QUEUE,
-} from '@/modules/contracts/contracts.constants';
 import { ContractsService } from '@/modules/contracts/contracts.service';
 import type { LeaseCreatedEvent } from '@/modules/contracts/events/lease-created.event';
 
@@ -38,16 +41,18 @@ export class LeaseCreatedListener implements OnApplicationBootstrap {
   constructor(
     private readonly rabbitmq: RabbitmqService,
     private readonly contracts: ContractsService,
+    @Inject(rabbitmqConfig.KEY)
+    private readonly config: ConfigType<typeof rabbitmqConfig>,
   ) {}
 
   async onApplicationBootstrap() {
     await this.rabbitmq.subscribe(
-      { queue: LEASE_CREATED_QUEUE, routingKeys: [LEASE_CREATED] },
+      { queue: this.config.queue, routingKeys: [this.config.routingKey] },
       (message) => this.handle(message),
     );
 
     this.logger.log(
-      `listening for "${LEASE_CREATED}" on "${LEASE_CREATED_QUEUE}"`,
+      `listening for "${this.config.routingKey}" on "${this.config.queue}"`,
     );
   }
 
@@ -57,9 +62,7 @@ export class LeaseCreatedListener implements OnApplicationBootstrap {
     const raw = message.content.toString();
 
     this.logger.log(`\n${SEPARATOR}`);
-    this.logger.log(
-      `[INCOMING MESSAGE] ${routingKey} → ${LEASE_CREATED_QUEUE}`,
-    );
+    this.logger.log(`[INCOMING MESSAGE] ${routingKey} → ${this.config.queue}`);
     this.logger.log(
       // `redelivered` is the one field here worth reading closely: true means
       // this exact message has been delivered before and something went wrong

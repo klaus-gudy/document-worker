@@ -13,8 +13,9 @@ import { connect } from 'amqplib';
 
 const URL = process.env.RABBITMQ_URL ?? 'amqp://guest:guest@localhost:5673';
 const EXCHANGE = process.env.EVENTS_EXCHANGE ?? 'jarvis.events';
-const QUEUE = 'contracts.lease-created';
-const DEAD_QUEUE = `${QUEUE}.dead`;
+const QUEUE = process.env.DOCUMENT_WORKER_QUEUE ?? 'DOCUMENT_WORKER_QUEUE';
+const DEAD_QUEUE = `${QUEUE}_DEAD`;
+const ROUTING_KEY = process.env.LEASE_CREATED_ROUTING_KEY ?? 'lease.created';
 
 const replay = process.argv.includes('--replay');
 const purge = process.argv.includes('--purge');
@@ -74,7 +75,7 @@ for (let i = 0; i < messageCount; i += 1) {
     continue;
   }
 
-  const routingKey = death?.['routing-keys']?.[0] ?? 'lease.created';
+  const routingKey = death?.['routing-keys']?.[0] ?? ROUTING_KEY;
   channel.publish(EXCHANGE, routingKey, message.content, {
     persistent: true,
     contentType: message.properties.contentType,

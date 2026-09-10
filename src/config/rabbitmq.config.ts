@@ -11,8 +11,34 @@ import { registerAs } from '@nestjs/config';
 export default registerAs('rabbitmq', () => ({
   url: process.env.RABBITMQ_URL ?? 'amqp://guest:guest@localhost:5673',
 
-  /** Topic exchange, so a second listener can bind `lease.*` without changes here. */
+  /**
+   * The exchange every event is published to. A *topic* exchange, so a future
+   * listener can bind `lease.*` or `#` without anything here changing.
+   *
+   * Nothing publishes to a queue directly — publishers address this exchange,
+   * and the bindings below decide which queues get a copy.
+   */
   exchange: process.env.EVENTS_EXCHANGE ?? 'jarvis.events',
+
+  /**
+   * **This worker's own mailbox.** Named for *who consumes*, deliberately in
+   * caps, so it cannot be mistaken for the routing key beside it — the queue
+   * and the event are different things, and naming the queue after the event
+   * is what made them look like one.
+   */
+  queue: process.env.DOCUMENT_WORKER_QUEUE ?? 'DOCUMENT_WORKER_QUEUE',
+
+  /**
+   * **The event this worker listens for** — a label describing what happened,
+   * not a destination. Lower-case dotted, matching the publisher's vocabulary.
+   *
+   * Configurable, with the caveat that it is a contract rather than a
+   * preference: it must match what the publisher sends, character for
+   * character. Get it wrong and nothing errors — the exchange simply routes the
+   * message to no queue at all and drops it, which is the quietest possible
+   * failure. Change it only alongside the publisher.
+   */
+  routingKey: process.env.LEASE_CREATED_ROUTING_KEY ?? 'lease.created',
 
   /**
    * Where rejected messages go instead of being destroyed.
@@ -22,6 +48,12 @@ export default registerAs('rabbitmq', () => ({
    * with a dead-letter exchange nothing is actually pointed at.
    */
   deadLetterExchange: `${process.env.EVENTS_EXCHANGE ?? 'jarvis.events'}.dlx`,
+
+  /**
+   * Where this worker's rejected messages are held. Derived from the queue name
+   * rather than set separately, so the pair cannot drift apart.
+   */
+  deadLetterQueue: `${process.env.DOCUMENT_WORKER_QUEUE ?? 'DOCUMENT_WORKER_QUEUE'}_DEAD`,
 
   /**
    * How many unacked messages the broker may have in flight to this process.
