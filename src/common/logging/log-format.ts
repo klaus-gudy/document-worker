@@ -64,3 +64,23 @@ export function truncate(value: string, max = MAX_PAYLOAD_CHARS): string {
 export function describePayload(value: unknown): string {
   return truncate(JSON.stringify(redact(value)));
 }
+
+/**
+ * A connection URL safe to print: the password replaced with `***`, everything
+ * else — scheme, user, host, port, vhost — kept, since those are what a reader
+ * needs to tell which broker was dialled.
+ *
+ * Exists because the startup line used to print `RABBITMQ_URL` verbatim, which
+ * put the broker password into every deploy log. Falls back to masking with a
+ * pattern when the value does not parse as a URL, so a malformed setting is
+ * still never echoed whole.
+ */
+export function redactUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.password) parsed.password = '***';
+    return parsed.toString();
+  } catch {
+    return url.replace(/\/\/([^:/@]*):[^@]*@/, '//$1:***@');
+  }
+}

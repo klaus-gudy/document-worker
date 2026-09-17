@@ -15,6 +15,7 @@ import {
 
 import type { DependencyHealth } from '@/common/dependency-health';
 import { withTimeout } from '@/common/dependency-health';
+import { redactUrl } from '@/common/logging/log-format';
 import rabbitmqConfig from '@/config/rabbitmq.config';
 
 /** What a feature module needs to declare to receive its events. */
@@ -24,6 +25,48 @@ export type Subscription = {
   /** Routing keys to bind it to on the exchange. */
   routingKeys: string[];
 };
+
+/** A subscription plus its handler, kept so a reconnect can replay it. */
+type RegisteredSubscription = {
+  subscription: Subscription;
+  handler: (message: ConsumeMessage) => void | Promise<void>;
+};
+
+/** First reconnect delay, doubling up to {@link MAX_RECONNECT_DELAY_MS}. */
+const BASE_RECONNECT_DELAY_MS = 1_000;
+
+/**
+ * Ceiling on the reconnect delay. Half a minute is long enough that a broker
+ * that is down for hours is not dialled thousands of times, and short enough
+ * that nobody watching a recovered broker waits meaningfully for this process
+ * to notice.
+ */
+const MAX_RECONNECT_DELAY_MS = 30_000;
+
+/**
+ * An error as one line worth logging.
+ *
+ * `error.message` alone is not enough for the failure this matters most for: a
+ * refused connection arrives as an `AggregateError` whose own message is the
+ * empty string, one entry per address tried, so the log read
+ * `could not connect to …:` and stopped. Falls back to the error `code`, then
+ * the nested causes, then the constructor name — anything rather than a blank.
+ */
+function describeError(cause: unknown): string {
+  if (!(cause instanceof Error)) return String(cause);
+
+  if (cause.message) return cause.message;
+
+  const code = (cause as { code?: unknown }).code;
+  if (typeof code === 'string') return code;
+
+  const errors = (cause as { errors?: unknown }).errors;
+  if (Array.isArray(errors) && errors.length > 0) {
+    return errors.map((error) => describeError(error)).join('; ');
+  }
+
+  return cause.name;
+}
 
 /**
  * The connection to RabbitMQ. **Transport only** — it knows nothing about
@@ -39,6 +82,14 @@ export type Subscription = {
  * `{ pattern, data }` envelope and binds queues by pattern name. A publisher
  * sending plain JSON to a topic exchange would not be understood, and its
  * messages would be dropped as unroutable.
+ *
+ * **It reconnects.** A failed first connection used to reject out of
+ * `onModuleInit` as an unhandled rejection and take the process down — which
+ * is exactly what happened on Railway, where the service started before its
+ * `RABBITMQ_URL` was set and crash-looped against `localhost`. A broker that is
+ * down at boot, or that goes away later, is now a retry with backoff rather
+ * than an exit: boot continues, `checkHealth` reports `down` meanwhile, and
+ * every subscription is replayed once the connection is back.
  */
 @Injectable()
 export class RabbitmqService implements OnModuleInit, OnApplicationShutdown {
@@ -55,45 +106,168 @@ export class RabbitmqService implements OnModuleInit, OnApplicationShutdown {
    */
   private connected = false;
 
+  /**
+   * Every subscription ever registered, replayed after each reconnect.
+   *
+   * A queue, its bindings and its consumer live on a *channel*, so all three
+   * die with the connection and none of them come back on their own. Without
+   * this the process would reconnect and then sit there consuming nothing,
+   * which is worse than crashing because it looks healthy.
+   */
+  private readonly subscriptions: RegisteredSubscription[] = [];
+
+  /**
+   * Which channel each in-flight delivery arrived on.
+   *
+   * Acking on a *different* channel than the one that delivered the message is
+   * a protocol error (`unknown delivery tag`), and the broker's answer is to
+   * close that channel — so a message handled across a reconnect would take
+   * down the fresh connection as it completed. A `WeakMap` because the entry
+   * is only interesting for as long as the caller still holds the message.
+   */
+  private readonly deliveryChannels = new WeakMap<ConsumeMessage, Channel>();
+
+  /** Consecutive failed attempts, reset once a connection is fully set up. */
+  private reconnectAttempts = 0;
+
+  private reconnectTimer?: NodeJS.Timeout;
+
+  /** Set by shutdown, so a deliberate close is not treated as an outage. */
+  private closing = false;
+
   constructor(
     @Inject(rabbitmqConfig.KEY)
     private readonly config: ConfigType<typeof rabbitmqConfig>,
   ) {}
 
+  /**
+   * Makes one connection attempt and *does not* fail the boot if it loses.
+   *
+   * Awaited rather than fired off, so that when the broker is up — the normal
+   * case, and what the e2e suite assumes — the connection and its exchange are
+   * ready before any listener's `onApplicationBootstrap` runs, exactly as
+   * before. When it loses, the retry continues in the background.
+   */
   async onModuleInit() {
-    this.connection = await connect(this.config.url);
-    this.channel = await this.connection.createChannel();
+    await this.openConnection();
+  }
 
-    // Asserted, not assumed. Idempotent while the arguments match, so this app
-    // can start before the publisher has ever run — otherwise a topic exchange
-    // with no bound queue silently drops everything it receives.
-    await this.channel.assertExchange(this.config.exchange, 'topic', {
-      durable: true,
-    });
-    await this.channel.prefetch(this.config.prefetch);
+  /**
+   * Opens the connection, asserts the exchange, and replays subscriptions.
+   *
+   * Every failure path lands in {@link scheduleReconnect} rather than throwing:
+   * this is called from `onModuleInit` and from a timer, and in neither place
+   * is there a caller who could do anything useful with the error.
+   */
+  private async openConnection(): Promise<void> {
+    if (this.closing) return;
 
-    this.connection.on('error', (error: Error) => {
+    try {
+      const connection = await connect(this.config.url);
+      const channel = await connection.createChannel();
+
+      // Asserted, not assumed. Idempotent while the arguments match, so this
+      // app can start before the publisher has ever run — otherwise a topic
+      // exchange with no bound queue silently drops everything it receives.
+      await channel.assertExchange(this.config.exchange, 'topic', {
+        durable: true,
+      });
+      await channel.prefetch(this.config.prefetch);
+
+      connection.on('error', (error: Error) => {
+        // Logged only: 'close' always follows, and that is where the reconnect
+        // is scheduled, so handling it here too would dial twice.
+        this.logger.error(`connection error: ${error.message}`);
+      });
+      connection.on('close', () => this.handleConnectionClose());
+
+      /*
+       * A channel can die on its own — `PRECONDITION_FAILED` from a queue whose
+       * settings changed is the common one — and the connection stays up
+       * around it, leaving this service holding a channel it cannot use. The
+       * connection is closed deliberately so the single reconnect path below
+       * rebuilds both rather than having a second repair route for channels.
+       */
+      channel.on('error', (error: Error) =>
+        this.logger.error(`channel error: ${error.message}`),
+      );
+      channel.on('close', () => {
+        if (this.closing || this.channel !== channel) return;
+        this.logger.warn('channel closed — dropping the connection with it');
+        void connection.close().catch(() => undefined);
+      });
+
+      this.connection = connection;
+      this.channel = channel;
+      this.connected = true;
+
+      await this.replaySubscriptions();
+
+      this.reconnectAttempts = 0;
+      this.logger.log(
+        `connected to ${redactUrl(this.config.url)} — ` +
+          `exchange "${this.config.exchange}"`,
+      );
+    } catch (cause) {
       this.connected = false;
-      this.logger.error(`connection error: ${error.message}`);
-    });
-    this.connection.on('close', () => {
-      this.connected = false;
-      this.logger.warn('connection closed');
-    });
+      this.logger.error(
+        `could not connect to ${redactUrl(this.config.url)}: ` +
+          describeError(cause),
+      );
+      this.scheduleReconnect();
+    }
+  }
 
-    this.connected = true;
-    this.logger.log(
-      `connected to ${this.config.url} — exchange "${this.config.exchange}"`,
+  /** Re-declares every registered subscription on the current channel. */
+  private async replaySubscriptions(): Promise<void> {
+    for (const registered of this.subscriptions) {
+      await this.startSubscription(registered);
+    }
+  }
+
+  private handleConnectionClose() {
+    // A close this service asked for, during shutdown, is not an outage.
+    if (this.closing) return;
+
+    this.connected = false;
+    this.connection = undefined;
+    this.channel = undefined;
+    this.logger.warn('connection closed');
+    this.scheduleReconnect();
+  }
+
+  /**
+   * Queues the next attempt, backing off exponentially.
+   *
+   * Guarded against overlapping timers because both the connection's `close`
+   * event and a failed attempt can land here for the same outage.
+   */
+  private scheduleReconnect() {
+    if (this.closing || this.reconnectTimer) return;
+
+    const delay = Math.min(
+      BASE_RECONNECT_DELAY_MS * 2 ** this.reconnectAttempts,
+      MAX_RECONNECT_DELAY_MS,
     );
+    this.reconnectAttempts += 1;
+
+    this.logger.warn(`reconnecting in ${Math.round(delay / 1000)}s`);
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      void this.openConnection();
+    }, delay);
+    // Nothing should be held open by a pending retry: without this the process
+    // would refuse to exit while waiting to redial a broker that is gone.
+    this.reconnectTimer.unref();
   }
 
   /**
    * Is the broker actually reachable right now.
    *
-   * There is currently **no reconnect logic** in this service — a dropped
-   * connection stays dropped until the process restarts. That is exactly why
-   * this exists: without it, that failure is invisible to everything outside
-   * this process. `checkExchange` is used as the probe because it is a
+   * A dropped connection is retried in the background, so this answering
+   * `down` means "not connected *yet*" rather than "not connected until
+   * someone restarts this". `checkExchange` is the probe because it is a
    * read-only round trip against something already known to exist (asserted
    * at startup), so a healthy broker answers it with no side effect.
    */
@@ -145,16 +319,38 @@ export class RabbitmqService implements OnModuleInit, OnApplicationShutdown {
   }
 
   /**
-   * Declares a listener's queue, binds it, and starts delivering.
+   * Registers a listener and, when the broker is reachable, starts delivering.
    *
-   * The queue is durable and the binding is re-asserted on every boot, so a
-   * message published while this process was down is waiting when it returns
-   * rather than having been dropped.
+   * The registration is kept regardless, so a listener that subscribes while
+   * the broker is down is not silently dropped — it starts consuming as part
+   * of the next successful connection, along with every other subscription.
+   *
+   * The queue is durable and the binding is re-asserted on every connection,
+   * so a message published while this process was down is waiting when it
+   * returns rather than having been dropped.
    */
   async subscribe(
     subscription: Subscription,
     handler: (message: ConsumeMessage) => void | Promise<void>,
-  ): Promise<string> {
+  ): Promise<void> {
+    const registered: RegisteredSubscription = { subscription, handler };
+    this.subscriptions.push(registered);
+
+    if (!this.connected) {
+      this.logger.warn(
+        `not connected — "${subscription.queue}" will start consuming once the broker is back`,
+      );
+      return;
+    }
+
+    await this.startSubscription(registered);
+  }
+
+  /** Declares one subscription's topology and starts its consumer. */
+  private async startSubscription({
+    subscription,
+    handler,
+  }: RegisteredSubscription): Promise<void> {
     const channel = this.getChannel();
     const deadLetterQueue = this.config.deadLetterQueue;
 
@@ -189,38 +385,38 @@ export class RabbitmqService implements OnModuleInit, OnApplicationShutdown {
       );
     }
 
-    const { consumerTag } = await channel.consume(
-      subscription.queue,
-      (message) => {
-        // A null delivery means the consumer was cancelled broker-side — there
-        // is nothing to ack and nothing to handle.
-        if (!message) return;
+    await channel.consume(subscription.queue, (message) => {
+      // A null delivery means the consumer was cancelled broker-side — there
+      // is nothing to ack and nothing to handle.
+      if (!message) return;
 
-        /*
-         * A handler is allowed to be async, and `consume` cannot await it — so
-         * a rejected promise would otherwise surface as an unhandled rejection
-         * and, depending on the Node flags, take the process down. Listeners
-         * are expected to catch their own failures; this is the net under that,
-         * not a substitute for it, and it leaves the message unacked rather
-         * than guessing whether to ack or reject on the listener's behalf.
-         */
-        const result = handler(message);
-        if (result instanceof Promise) {
-          result.catch((error: unknown) =>
-            this.logger.error(
-              `unhandled error from the ${subscription.queue} handler: ` +
-                (error instanceof Error ? error.message : String(error)),
-            ),
-          );
-        }
-      },
-    );
+      // Remembered before the handler runs: `ack`/`reject` need the channel
+      // this arrived on, which may not be the current one by the time they
+      // are called.
+      this.deliveryChannels.set(message, channel);
+
+      /*
+       * A handler is allowed to be async, and `consume` cannot await it — so
+       * a rejected promise would otherwise surface as an unhandled rejection
+       * and, depending on the Node flags, take the process down. Listeners
+       * are expected to catch their own failures; this is the net under that,
+       * not a substitute for it, and it leaves the message unacked rather
+       * than guessing whether to ack or reject on the listener's behalf.
+       */
+      const result = handler(message);
+      if (result instanceof Promise) {
+        result.catch((error: unknown) =>
+          this.logger.error(
+            `unhandled error from the ${subscription.queue} handler: ` +
+              (error instanceof Error ? error.message : String(error)),
+          ),
+        );
+      }
+    });
 
     this.logger.log(
       `rejects from "${subscription.queue}" are held in "${deadLetterQueue}"`,
     );
-
-    return consumerTag;
   }
 
   /**
@@ -269,7 +465,7 @@ export class RabbitmqService implements OnModuleInit, OnApplicationShutdown {
   }
 
   ack(message: ConsumeMessage) {
-    this.getChannel().ack(message);
+    this.settle(message, 'ack', (channel) => channel.ack(message));
   }
 
   /**
@@ -280,7 +476,38 @@ export class RabbitmqService implements OnModuleInit, OnApplicationShutdown {
    * spin on it forever and every valid message behind it would wait.
    */
   reject(message: ConsumeMessage) {
-    this.getChannel().nack(message, false, false);
+    this.settle(message, 'reject', (channel) =>
+      channel.nack(message, false, false),
+    );
+  }
+
+  /**
+   * Acks or rejects on the channel the message was delivered on.
+   *
+   * A message whose channel is gone — the connection dropped while the handler
+   * was working — is **already back on the queue**: the broker requeues
+   * everything unacked when a channel closes. Settling it here would be a
+   * protocol error against the new channel and would close that one too, so
+   * this says so and stops. The redelivery is handled like any other, and the
+   * `redelivered` flag in the listener's log is what shows it happened.
+   */
+  private settle(
+    message: ConsumeMessage,
+    action: 'ack' | 'reject',
+    settle: (channel: Channel) => void,
+  ) {
+    const channel = this.deliveryChannels.get(message);
+
+    if (!channel || channel !== this.channel) {
+      this.logger.warn(
+        `cannot ${action} delivery ${message.fields.deliveryTag} — its channel ` +
+          `is gone, so the broker has already requeued it`,
+      );
+      return;
+    }
+
+    settle(channel);
+    this.deliveryChannels.delete(message);
   }
 
   /**
@@ -291,6 +518,15 @@ export class RabbitmqService implements OnModuleInit, OnApplicationShutdown {
    * immediately.
    */
   async onApplicationShutdown() {
+    // Set first: it stops the close handlers below from reading a deliberate
+    // shutdown as an outage and scheduling a reconnect on the way out.
+    this.closing = true;
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+
     try {
       await this.channel?.close();
       await this.connection?.close();
@@ -298,6 +534,7 @@ export class RabbitmqService implements OnModuleInit, OnApplicationShutdown {
     } catch {
       // Already closing, or the socket is gone. Nothing left to close.
     } finally {
+      this.connected = false;
       this.channel = undefined;
       this.connection = undefined;
     }

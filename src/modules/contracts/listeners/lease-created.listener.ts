@@ -32,8 +32,10 @@ import type { LeaseCreatedEvent } from '@/modules/contracts/events/lease-created
  * and nothing in Nest's interceptor chain can see one.
  *
  * Starts on `onApplicationBootstrap` rather than `onModuleInit`, because by
- * then `RabbitmqService` has finished connecting. Subscribing earlier would
- * throw on a channel that does not exist yet.
+ * then `RabbitmqService` has had its turn at connecting. If the broker was
+ * unreachable it has not — the subscription is registered and starts consuming
+ * on the first successful connection, so this no longer depends on the broker
+ * being up at boot.
  */
 @Injectable()
 export class LeaseCreatedListener implements OnApplicationBootstrap {
@@ -52,8 +54,11 @@ export class LeaseCreatedListener implements OnApplicationBootstrap {
       (message) => this.handle(message),
     );
 
+    // "subscribed", not "listening": with the broker down the subscription is
+    // registered and starts on reconnect, and claiming to be listening then
+    // would be the one line in the log that is not true.
     this.logger.log(
-      `listening for "${this.config.routingKey}" on "${this.config.queue}"`,
+      `subscribed to "${this.config.routingKey}" on "${this.config.queue}"`,
     );
   }
 

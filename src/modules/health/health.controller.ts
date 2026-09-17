@@ -18,22 +18,18 @@ import { StorageService } from '@/storage/storage.service';
  * decides liveness by polling a port needs something to poll, and a process
  * with no such route gets restarted on a schedule nobody chose.
  *
- * **This now checks RabbitMQ and MinIO, which reverses an earlier decision**
- * (see git history) to keep this shallow and never fail it on a broker outage.
- * That reasoning assumed the connection would reconnect on its own; it does
- * not — `RabbitmqService` has no retry loop, so a dropped connection stays
- * dropped until this process is restarted. Reporting it here is currently the
- * *only* way anything finds out that needs to happen.
+ * **This checks RabbitMQ and MinIO**, so it reports a dependency outage rather
+ * than answering `ok` from a process that cannot do its job.
  *
  * **Read this as a combined liveness+readiness probe, and know what that
  * costs.** A platform pointed at this will restart the process on any broker
  * or MinIO blip, including ones that recover on their own in seconds — a
  * restart storm during, say, a RabbitMQ rolling upgrade, for a process that
- * did nothing wrong. The fix that actually removes this tradeoff is giving
- * `RabbitmqService` its own reconnect logic and splitting this into a
- * liveness route (always `ok` if the event loop answers) and a separate
- * readiness route (this one); ask if you want that instead of the restart
- * behavior below.
+ * did nothing wrong. That restart is now pure cost on the broker side:
+ * `RabbitmqService` reconnects with backoff and replays its subscriptions, so
+ * the same outage heals without anything being restarted. Splitting this into
+ * a liveness route (always `ok` if the event loop answers) and a readiness
+ * route (this one) is the remaining half of that fix; ask if you want it.
  */
 @ApiTags('health')
 @Controller('health')
