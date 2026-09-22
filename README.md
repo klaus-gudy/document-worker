@@ -86,7 +86,13 @@ curl -X POST http://localhost:3400/api/v1/pdf/render \
   --output out.pdf
 ```
 
-`GET /health` reports the broker and the bucket. API docs at `/docs`.
+`GET /health/live` always answers `ok` if the process is up — point a restart
+policy at this one. `GET /health/ready` probes the broker and the bucket and
+returns 503 if either is down — point a dashboard or traffic gate at this one,
+not a restart policy, since `RabbitmqService` reconnects on its own and a
+restart would just kill a process that was already recovering. `GET /health`
+is kept as an alias of `/health/ready` for anything already pointed at it. API
+docs at `/docs`.
 
 ## Running it
 
@@ -133,8 +139,6 @@ docker exec <broker> rabbitmqctl delete_queue DOCUMENT_WORKER_QUEUE
 
 ## Known gaps
 
-- **No reconnect.** A dropped broker connection stays dropped until the process
-  restarts; `GET /health` is what makes that visible rather than silent.
 - **A bad payload and a storage outage take the same path.** Both are rejected
   to the dead-letter queue, where the second really wants a retry.
 - **No cap on `html` from the queue.** The HTTP route caps it at 5MB via
