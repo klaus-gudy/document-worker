@@ -55,11 +55,16 @@ USER pwuser
 
 EXPOSE 3400
 
-# Uses the app's own endpoint, which probes RabbitMQ and MinIO and answers 503
-# when either is unreachable. That is deliberate (`RabbitmqService` has no
-# reconnect loop, so a restart is the recovery), but it does mean a container
-# started without its dependencies reports unhealthy rather than merely idle.
+# Points at /health/live, not /health/ready — deliberately. Docker (and
+# anything reading its health state, e.g. Swarm or ECS) restarts a container
+# it decides is unhealthy, and there is no separate "not ready but don't kill
+# it" signal the way Kubernetes has readiness probes. RabbitmqService already
+# reconnects with backoff and replays its subscriptions on its own, so a
+# broker or MinIO blip should not be a reason to restart this container —
+# doing so would kill a process that was already fixing itself. Poll
+# /health/ready separately (a dashboard, an alert) if you need visibility into
+# "up but can't currently do its job" without tying it to a restart.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:3400/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:3400/health/live').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
 
 CMD ["node", "dist/main"]
