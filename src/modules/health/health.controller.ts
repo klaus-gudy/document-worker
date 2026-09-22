@@ -12,24 +12,27 @@ import { HealthResponseDto } from '@/modules/health/dto/health-response.dto';
 import { StorageService } from '@/storage/storage.service';
 
 /**
- * The one HTTP surface this app exposes.
+ * The one HTTP surface this app exposes — now two routes, not one, because
+ * "is the process alive" and "can it currently do its job" are different
+ * questions with different consequences for getting them wrong.
  *
- * This is a queue listener — its real input is the broker — but a platform that
- * decides liveness by polling a port needs something to poll, and a process
- * with no such route gets restarted on a schedule nobody chose.
+ * **`/health/live` — liveness. Always `ok` if the event loop answers.** This
+ * is the route to restart on. `RabbitmqService` reconnects with backoff and
+ * replays its subscriptions on its own, so a broker blip is not a reason to
+ * kill this process — doing so would restart something that was already
+ * fixing itself, which is pure cost with no benefit. Nothing here checks a
+ * dependency, on purpose: a route that can fail because MinIO is slow is a
+ * liveness route in name only.
  *
- * **This checks RabbitMQ and MinIO**, so it reports a dependency outage rather
- * than answering `ok` from a process that cannot do its job.
+ * **`/health/ready` — readiness. Probes RabbitMQ and MinIO, 503 if either is
+ * down.** This is the route to gate traffic on, or simply to watch — it tells
+ * you the process is up but *cannot* currently do its job, which is a
+ * genuinely different fact from "restart me".
  *
- * **Read this as a combined liveness+readiness probe, and know what that
- * costs.** A platform pointed at this will restart the process on any broker
- * or MinIO blip, including ones that recover on their own in seconds — a
- * restart storm during, say, a RabbitMQ rolling upgrade, for a process that
- * did nothing wrong. That restart is now pure cost on the broker side:
- * `RabbitmqService` reconnects with backoff and replays its subscriptions, so
- * the same outage heals without anything being restarted. Splitting this into
- * a liveness route (always `ok` if the event loop answers) and a readiness
- * route (this one) is the remaining half of that fix; ask if you want it.
+ * **`GET /health`** stays as an alias for `/health/ready`, unchanged in shape
+ * and status codes. Removing it would break anything already pointed at it —
+ * this repo's own `Dockerfile` was, until this same change moved it to
+ * `/health/live` for the reason above.
  */
 @ApiTags('health')
 @Controller('health')
@@ -39,13 +42,51 @@ export class HealthController {
     private readonly storage: StorageService,
   ) {}
 
-  @Get()
+  @Get('live')
   @ApiOperation({
-    summary: 'Liveness + dependency check',
+    summary: 'Liveness probe',
+    description:
+      'Always `ok` if this process is running and its event loop answers. ' +
+      'Checks no dependency — a broker or bucket outage is not a reason to ' +
+      'restart a process that is actively reconnecting on its own. Point a ' +
+      "platform's restart policy at this route, not at /health/ready.",
+  })
+  @ApiResponse({ status: HttpStatus.OK, type: HealthResponseDto })
+  live(): HealthResponseDto {
+    return {
+      status: 'ok',
+      uptimeSeconds: Math.round(process.uptime()),
+      checks: undefined,
+    };
+  }
+
+  @Get('ready')
+  @ApiOperation({
+    summary: 'Readiness probe',
     description:
       'Reports process uptime plus a live probe of RabbitMQ and the MinIO ' +
-      'bucket. Returns 503 if either is down — see the class-level note on ' +
-      'what that means for restart behavior.',
+      'bucket. Returns 503 if either is down. This is a "can it work right ' +
+      'now" signal, not a "kill it" signal — see the class-level note.',
+  })
+  @ApiResponse({ status: HttpStatus.OK, type: HealthResponseDto })
+  @ApiServiceUnavailableResponse({
+    description: 'RabbitMQ or MinIO is unreachable.',
+    type: HealthResponseDto,
+  })
+  async ready(
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<HealthResponseDto> {
+    return this.checkReadiness(res);
+  }
+
+  /** Kept at the bare path as a stable alias for `/health/ready`. */
+  @Get()
+  @ApiOperation({
+    summary: 'Readiness probe (alias of /health/ready)',
+    description:
+      'Identical to /health/ready, kept at the original path so nothing ' +
+      'already pointed here breaks. Prefer /health/live or /health/ready ' +
+      'explicitly in new configuration.',
   })
   @ApiResponse({ status: HttpStatus.OK, type: HealthResponseDto })
   @ApiServiceUnavailableResponse({
@@ -55,6 +96,10 @@ export class HealthController {
   async check(
     @Res({ passthrough: true }) res: Response,
   ): Promise<HealthResponseDto> {
+    return this.checkReadiness(res);
+  }
+
+  private async checkReadiness(res: Response): Promise<HealthResponseDto> {
     // Run together, not one after another: two independent dependencies have
     // no reason to make each other's timeout additive, and this halves the
     // worst case from ~4s to ~2s.

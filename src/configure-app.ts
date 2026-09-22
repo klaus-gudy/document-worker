@@ -18,11 +18,17 @@ export function configureApp(app: INestApplication): { apiPrefix: string } {
   const apiPrefix = config.get<string>('app.apiPrefix', 'api/v1');
 
   /*
-   * `health` excluded on purpose: a platform's liveness probe should not need
-   * to know or agree on an API version to find the process, so it stays
-   * reachable at bare `/health` regardless of what `apiPrefix` is set to.
+   * All three health routes excluded on purpose: a platform's liveness or
+   * readiness probe should not need to know or agree on an API version to
+   * find the process, so each stays reachable at its bare path regardless of
+   * what `apiPrefix` is set to. Nest's `exclude` matches literal paths, not a
+   * prefix — `'health'` alone would leave `/health/live` and `/health/ready`
+   * sitting *inside* the prefix, silently unreachable at the path this
+   * app's own Dockerfile and README document.
    */
-  app.setGlobalPrefix(apiPrefix, { exclude: ['health'] });
+  app.setGlobalPrefix(apiPrefix, {
+    exclude: ['health', 'health/live', 'health/ready'],
+  });
 
   app.useGlobalPipes(
     new ValidationPipe({

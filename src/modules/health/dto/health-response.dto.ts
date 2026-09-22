@@ -1,4 +1,9 @@
-import { ApiExtraModels, ApiProperty, getSchemaPath } from '@nestjs/swagger';
+import {
+  ApiExtraModels,
+  ApiProperty,
+  ApiPropertyOptional,
+  getSchemaPath,
+} from '@nestjs/swagger';
 
 /**
  * One dependency's probe result. A discriminated union rather than a single
@@ -57,6 +62,11 @@ export class HealthResponseDto {
   })
   uptimeSeconds: number;
 
-  @ApiProperty({ type: DependencyChecksDto })
-  checks: DependencyChecksDto;
+  @ApiPropertyOptional({
+    type: DependencyChecksDto,
+    description:
+      'Absent on /health/live — liveness checks no dependency. Present on ' +
+      '/health/ready and the /health alias.',
+  })
+  checks?: DependencyChecksDto;
 }
