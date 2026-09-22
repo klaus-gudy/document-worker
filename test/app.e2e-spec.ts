@@ -48,16 +48,38 @@ describe('AppModule (e2e)', () => {
     await app.close();
   });
 
-  describe('GET /health', () => {
+  describe('GET /health/live', () => {
     it('is reachable at the bare path, outside the API prefix', async () => {
-      // The prefix excludes `health` on purpose — see `configureApp`'s own
-      // comment. Asserting the bare path here is what would catch that
-      // exclusion silently breaking.
-      await request(server).get(`/${apiPrefix}/health`).expect(404);
+      // The prefix excludes every health route on purpose — see
+      // `configureApp`'s own comment. Asserting the prefixed path 404s is
+      // what would catch that exclusion silently breaking.
+      await request(server).get(`/${apiPrefix}/health/live`).expect(404);
+    });
+
+    it('reports ok with no dependency checks', async () => {
+      const response = await request(server).get('/health/live').expect(200);
+
+      const body = response.body as {
+        status: string;
+        uptimeSeconds: number;
+        checks?: unknown;
+      };
+
+      expect(body.status).toBe('ok');
+      expect(body.uptimeSeconds).toBeGreaterThanOrEqual(0);
+      // The whole point of liveness: it answers without asking RabbitMQ or
+      // MinIO anything, so there is nothing to report here.
+      expect(body.checks).toBeUndefined();
+    });
+  });
+
+  describe('GET /health/ready', () => {
+    it('is reachable at the bare path, outside the API prefix', async () => {
+      await request(server).get(`/${apiPrefix}/health/ready`).expect(404);
     });
 
     it('reports both dependencies up', async () => {
-      const response = await request(server).get('/health').expect(200);
+      const response = await request(server).get('/health/ready').expect(200);
 
       const body = response.body as {
         status: string;
@@ -73,6 +95,25 @@ describe('AppModule (e2e)', () => {
         },
       });
       expect(body.uptimeSeconds).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  describe('GET /health (alias)', () => {
+    it('behaves exactly like /health/ready', async () => {
+      const response = await request(server).get('/health').expect(200);
+
+      const body = response.body as {
+        status: string;
+        checks: { rabbitmq: { status: string }; storage: { status: string } };
+      };
+
+      expect(body).toMatchObject({
+        status: 'ok',
+        checks: {
+          rabbitmq: { status: 'up' },
+          storage: { status: 'up' },
+        },
+      });
     });
   });
 
